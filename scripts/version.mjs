@@ -46,6 +46,16 @@ if (tag && !tag.startsWith("v")) {
   process.exit(1);
 }
 
+const expectedKernelTag =
+  info.chromiumVersion && info.kernelCommit
+    ? `${info.chromiumVersion}-${info.kernelCommit}`
+    : "";
+if (info.kernelTag && expectedKernelTag && info.kernelTag !== expectedKernelTag) {
+  console.error(
+    `[version] build-info.kernelTag is ${info.kernelTag}, expected ${expectedKernelTag}`,
+  );
+  process.exit(1);
+}
 const [major, minor] = version.split(".");
 const prerelease = version.includes("-");
 console.log(`VERSION=${version}`);

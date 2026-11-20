@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1
+# Immutable kernel artifact image: contains only the built Chromium runtime files.
+# It is not a bootable OS image and has no shell; it is consumed by the runtime
+# build via `docker cp` / a multi-stage COPY.
+#
+#   docker build -f chromium/Dockerfile.kernel-artifact \
+#     -t registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d \
+#     build/
+#
+# The build context must contain the contents of build/ (chrome, paks, ICU,
+# locales, GPU libs, LICENSES.chromium.html).
+FROM scratch
+
+ARG VERSION=unknown
+ARG CHROMIUM_VERSION=unknown
+ARG KERNEL_REVISION=unknown
+ARG CHROME_SHA256=unknown
+ARG OVERLAY_SHA256=unknown
+
+LABEL org.opencontainers.image.title="Sumeru kernel artifact" \
+      org.opencontainers.image.description="Chromium runtime files for Sumeru; not bootable" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
+      org.opencontainers.image.source="https://github.com/lingya-ai/sumeru-shim" \
+      io.sumeru.chromium.version="${CHROMIUM_VERSION}" \
+      io.sumeru.kernel.revision="${KERNEL_REVISION}" \
+      io.sumeru.chrome.sha256="${CHROME_SHA256}" \
+      io.sumeru.overlay.sha256="${OVERLAY_SHA256}"
+
+COPY . /opt/sumeru/

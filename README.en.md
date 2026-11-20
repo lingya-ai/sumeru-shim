@@ -82,7 +82,10 @@ npm run up
 npm run smoke
 ```
 
-> The prebuilt kernel artifact is not distributed with the repository; the public Release has been withdrawn. Build it yourself (see [docs/kernel.md](docs/kernel.md)) or obtain an artifact from the maintainers and use --from.
+> Kernel images live in the private registry
+> `registry.ops.lingya.tech/sumeru/sumeru-kernel`; there is no public prebuilt
+> artifact. Build it yourself (see [docs/kernel.md](docs/kernel.md)) or use an
+> archived copy from the maintainers with `--from`.
 
 Open **http://127.0.0.1:6901/vnc.html** to see the native Chromium window.
 
@@ -218,7 +221,7 @@ bin/                 CLI (sumeru.mjs), MCP (sumeru-mcp.mjs), container scripts
 test/                node:test checks
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
-chromium/            kernel version, GN args, minimal overlay
+chromium/            kernel version, GN args, minimal overlay, kernel artifact Dockerfile
 docs/                architecture, development, operations, kernel, troubleshooting, versioning
 .github/workflows/   CI and Docker Hub image release
 vendor/novnc/        noVNC (MPL-2.0) for offline image builds

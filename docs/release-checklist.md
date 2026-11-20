@@ -27,31 +27,30 @@ npm run acceptance:m09
 - [ ] `node scripts/setup.mjs --check` 通过
 - [ ] `node scripts/release.mjs --check` 通过
 
-## 3. 产物
+## 3. 内核镜像
 
-- [ ] kernel artifact（含 `LICENSES.chromium.html`）
-- [ ] `SHA256SUMS`
-- [ ] 镜像 `sumeru-runtime:v2.1.0`（如发布镜像）
-- [ ] `build-info.json` 的 `artifact.url` 指向新托管位置
+- [ ] `kernel-build` 已产出 `registry.ops.lingya.tech/sumeru/sumeru-kernel:<chromium>-<revision>`
+- [ ] 镜像内 `/opt/sumeru/LICENSES.chromium.html` 存在
+- [ ] `build-info.json` 的 `kernelImage` / `kernelTag` 已更新
+- [ ] 可选：OSS 归档 tar.gz + SHA256
 
-## 4. Docker Hub（GitHub Actions）
+## 4. GitHub Actions / Docker Hub
 
+- [ ] 配置 `KERNEL_REGISTRY_USERNAME`、`KERNEL_REGISTRY_PASSWORD`
 - [ ] 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`
-- [ ] 配置 `KERNEL_ARTIFACT_URL`（及可选 `KERNEL_ARTIFACT_SHA256`）
-- [ ] 可选：`DOCKERHUB_REPOSITORY`（默认 `sumeru-runtime`）
-- [ ] 手动跑 `.github/workflows/release-image.yml`（push=false），确认 build 通过
-- [ ] 打 tag `vX.Y.Z` 并 push，触发镜像推送
+- [ ] 可选：`KERNEL_REGISTRY`、`KERNEL_IMAGE`、`DOCKERHUB_REPOSITORY`
+- [ ] 手动跑 `.github/workflows/kernel-build.yml`，确认 kernel image 已推送
+- [ ] 手动跑 `.github/workflows/release-image.yml`（push=false），确认拉取/构建
+- [ ] 打 tag `vX.Y.Z` 并 push，触发 runtime image 推送
 - [ ] 验证 Docker Hub 上的 `X.Y.Z` / `X.Y` / `latest` / `sha-*` 标签
 
-## 5. 托管（决定后执行）
+## 5. 发布
 
-- [ ] 选择 artifact 托管
-- [ ] 上传 artifact 与 checksum
-- [ ] 写入 `build-info.json.artifact.url`
 - [ ] `git push origin main`
+- [ ] 记录 kernel image digest / runtime image digest
 - [ ] 按商业策略决定是否创建社区 Release
 
-## 5. 发布后复验
+## 6. 发布后复验
 
 ```bash
 git clone https://github.com/lingya-ai/sumeru-shim.git
@@ -68,8 +67,8 @@ npm run smoke
 - [ ] noVNC 可看可点
 - [ ] `scan-secrets` 0 命中
 
-## 6. 回滚
+## 7. 回滚
 
-- 镜像：回到上一个 tag。
-- 内核：`npm run setup -- --from <旧 artifact>`（仅限你有权使用的版本）。
+- 运行时镜像：回到上一个 tag。
+- 内核：切回 `build-info.kernelTag` / `kernelImage` 对应的旧 kernel image。
 - profile：回滚前备份 `/data` 卷。

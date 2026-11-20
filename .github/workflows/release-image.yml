@@ -3,12 +3,14 @@ name: release-image
 # Tag vX.Y.Z -> build and push sumeru-runtime to Docker Hub.
 # Manual run -> build only by default; set "push" to publish.
 #
-# Required secrets/vars:
-#   DOCKERHUB_USERNAME    Docker Hub user/org
-#   DOCKERHUB_TOKEN       Docker Hub access token (write scope)
-#   KERNEL_ARTIFACT_URL   URL to the kernel tar.gz (build/ contents)
-#   KERNEL_ARTIFACT_SHA256 optional; falls back to build-info.artifact.sha256
-#   vars.DOCKERHUB_REPOSITORY optional, default "sumeru-runtime"
+# Kernel source: private OCI image at registry.ops.lingya.tech
+# Required secrets:
+#   KERNEL_REGISTRY_USERNAME / KERNEL_REGISTRY_PASSWORD (pull kernel)
+#   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN (push runtime)
+# Optional variables:
+#   KERNEL_REGISTRY, KERNEL_IMAGE, DOCKERHUB_REPOSITORY
+#
+# The kernel must already be published by .github/workflows/kernel-build.yml.
 
 on:
   push:
@@ -21,6 +23,10 @@ on:
         default: false
       version:
         description: "Version to build (default: package.json)"
+        type: string
+        required: false
+      kernel_tag:
+        description: "Kernel tag (default: build-info.kernelTag)"
         type: string
         required: false
 
@@ -36,8 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || 'sumeru-runtime' }}
-      KERNEL_ARTIFACT_URL: ${{ secrets.KERNEL_ARTIFACT_URL || vars.KERNEL_ARTIFACT_URL }}
-      KERNEL_ARTIFACT_SHA256: ${{ secrets.KERNEL_ARTIFACT_SHA256 || vars.KERNEL_ARTIFACT_SHA256 }}
+      KERNEL_REGISTRY: ${{ vars.KERNEL_REGISTRY || 'registry.ops.lingya.tech' }}
+      KERNEL_IMAGE: ${{ vars.KERNEL_IMAGE || 'registry.ops.lingya.tech/sumeru/sumeru-kernel' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,28 +64,45 @@ jobs:
           else
             node scripts/version.mjs | tr '[:upper:]' '[:lower:]' >> "${GITHUB_OUTPUT}"
           fi
+          KERNEL_TAG="${{ github.event.inputs.kernel_tag }}"
+          if [ -z "${KERNEL_TAG}" ]; then
+            KERNEL_TAG="$(node -p "require('./build-info.json').kernelTag || (require('./build-info.json').chromiumVersion + '-' + require('./build-info.json').kernelCommit)")"
+          fi
+          echo "kernel_tag=${KERNEL_TAG}" >> "${GITHUB_OUTPUT}"
           echo "kernel_commit=$(node -p "require('./build-info.json').kernelCommit || 'unknown'")" >> "${GITHUB_OUTPUT}"
           echo "chromium_version=$(node -p "require('./build-info.json').chromiumVersion || 'unknown'")" >> "${GITHUB_OUTPUT}"
 
-      - name: Prepare kernel artifact
+      - name: Login to kernel registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.KERNEL_REGISTRY }}
+          username: ${{ secrets.KERNEL_REGISTRY_USERNAME }}
+          password: ${{ secrets.KERNEL_REGISTRY_PASSWORD }}
+
+      - name: Pull kernel image
         run: |
           set -euo pipefail
-          if [ -z "${KERNEL_ARTIFACT_URL}" ]; then
-            echo "::error::KERNEL_ARTIFACT_URL is not set. Add the secret/variable pointing to the kernel tar.gz."
-            exit 1
-          fi
+          IMAGE="${KERNEL_IMAGE}:${{ steps.version.outputs.kernel_tag }}"
+          docker pull "${IMAGE}"
+          CID="$(docker create "${IMAGE}" /bin/true)"
+          rm -rf build
           mkdir -p build
-          curl -fL --retry 3 --retry-delay 5 "${KERNEL_ARTIFACT_URL}" -o /tmp/sumeru-kernel.tar.gz
-          EXPECTED="${KERNEL_ARTIFACT_SHA256:-$(node -p "require('./build-info.json').artifact?.sha256 || ''")}"
-          if [ -z "${EXPECTED}" ]; then
-            echo "::error::No KERNEL_ARTIFACT_SHA256 and build-info.artifact.sha256 is empty."
+          docker cp "${CID}:/opt/sumeru/." build/
+          docker rm "${CID}"
+          test -x build/chrome
+          if [ ! -f build/LICENSES.chromium.html ]; then
+            echo "::error::kernel image is missing LICENSES.chromium.html; refusing to publish."
             exit 1
           fi
-          echo "${EXPECTED}  /tmp/sumeru-kernel.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/sumeru-kernel.tar.gz -C build
-          node scripts/setup.mjs --check
-          if [ ! -f build/LICENSES.chromium.html ]; then
-            echo "::error::build/LICENSES.chromium.html is missing; refusing to publish a Chromium binary without upstream notices."
+          LABEL_SHA="$(docker inspect --format '{{ index .Config.Labels "io.sumeru.chrome.sha256" }}' "${IMAGE}")"
+          FILE_SHA="$(sha256sum build/chrome | cut -d' ' -f1)"
+          if [ -z "${LABEL_SHA}" ] || [ "${LABEL_SHA}" != "${FILE_SHA}" ]; then
+            echo "::error::kernel image chrome SHA label (${LABEL_SHA}) does not match extracted file (${FILE_SHA})."
+            exit 1
+          fi
+          EXPECTED_SHA="$(node -p "require('./build-info.json').chromeSha256 || ''")"
+          if [ -n "${EXPECTED_SHA}" ] && [ "${EXPECTED_SHA}" != "${FILE_SHA}" ]; then
+            echo "::error::build-info.chromeSha256 (${EXPECTED_SHA}) does not match kernel image (${FILE_SHA})."
             exit 1
           fi
 
@@ -103,6 +126,8 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
+            io.sumeru.kernel.image=${{ env.KERNEL_IMAGE }}
+            io.sumeru.kernel.tag=${{ steps.version.outputs.kernel_tag }}
             io.sumeru.kernel.commit=${{ steps.version.outputs.kernel_commit }}
             io.sumeru.chromium.version=${{ steps.version.outputs.chromium_version }}
 
@@ -138,7 +163,8 @@ jobs:
           echo "### Sumeru image" >> "$GITHUB_STEP_SUMMARY"
           echo "- version: ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- channel: ${{ steps.version.outputs.is_stable == 'true' && 'stable' || 'prerelease' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- kernel: ${{ steps.version.outputs.chromium_version }} / ${{ steps.version.outputs.kernel_commit }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kernel: ${{ env.KERNEL_IMAGE }}:${{ steps.version.outputs.kernel_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kernel commit: ${{ steps.version.outputs.kernel_commit }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- tags:" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"

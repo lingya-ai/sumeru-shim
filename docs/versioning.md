@@ -61,11 +61,14 @@ node scripts/version.mjs --tag v2.1.0
 | `build-info.chromiumVersion` | Chromium 版本（如 `156.0.8078.74`） |
 | `build-info.kernelCommit` | 内核构建 revision |
 | `build-info.chromeSha256` | chrome 二进制 |
-| `build-info.artifact.sha256` | kernel artifact |
+| `build-info.artifact.sha256` | kernel tar.gz（归档/备份） |
+| `build-info.kernelImage` | 私有 OCI registry 的内核镜像名 |
+| `build-info.kernelTag` | 内核镜像 tag：`<chromium>-<kernelCommit>` |
 | `bin/sumeru-mcp.mjs` 的 `protocolVersion` | MCP 传输协议（`2024-11-05`） |
 | MCP `serverInfo.version` | 工具 schema 版本（当前 `0.2.0`） |
 
-发布记录应能回答：**这个镜像里的 chrome 是哪个 SHA、由哪个 kernel commit 构建、对应哪个 kernel artifact。**
+发布记录应能回答：**这个镜像里的 chrome 是哪个 SHA、由哪个 kernel commit 构建、
+对应哪个 kernel image digest。**
 
 ## 5. 发布流程
 
@@ -75,9 +78,9 @@ node scripts/version.mjs --tag v2.1.0
 4. commit；
 5. `git tag -a vX.Y.Z -m "..."`；
 6. `git push origin main` 与 `git push origin vX.Y.Z`；
-7. GitHub Actions `release-image` 构建并推送 Docker Hub；
+7. GitHub Actions `release-image` 从私有 registry 拉取 kernel image，构建并推送 Docker Hub；
 8. 验证镜像 digest 与 `docker pull`；
-9. 记录版本、镜像 digest、kernel artifact SHA。
+9. 记录版本、运行时镜像 digest、kernel image tag/digest。
 
 ## 6. 分支与 hotfix
 
@@ -103,19 +106,23 @@ node scripts/version.mjs --tag v2.1.0
 ## 9. 相关文件
 
 - `scripts/version.mjs`
+- `.github/workflows/ci.yml`
+- `.github/workflows/kernel-build.yml`
 - `.github/workflows/release-image.yml`
+- `chromium/Dockerfile.kernel-artifact`
 - `CHANGELOG.md`
 - `build-info.json`
 - `docs/release-checklist.md`
 
-## 10. GitHub Actions / Docker Hub
+## 10. GitHub Actions / 私有镜像仓库
 
 ### 工作流
 
 | 文件 | 触发 | 行为 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push `main` / PR / 手动 | `version:check`、单测、repo checks |
-| `.github/workflows/release-image.yml` | tag `v*` / 手动 | 构建镜像；tag 触发时推送 Docker Hub |
+| `.github/workflows/kernel-build.yml` | 手动 | 在 self-hosted runner 构建 Chromium，推送 kernel image |
+| `.github/workflows/release-image.yml` | tag `v*` / 手动 | 拉取 kernel image，构建 runtime image 并推送 Docker Hub |
 
 ### 必需 secrets / variables
 
@@ -123,22 +130,36 @@ node scripts/version.mjs --tag v2.1.0
 
 | 名称 | 类型 | 说明 |
 |---|---|---|
+| `KERNEL_REGISTRY_USERNAME` | secret | `registry.ops.lingya.tech` 拉取/推送账号 |
+| `KERNEL_REGISTRY_PASSWORD` | secret | registry 密码/robot token |
 | `DOCKERHUB_USERNAME` | secret | Docker Hub 用户或组织 |
 | `DOCKERHUB_TOKEN` | secret | Docker Hub access token，需 write 权限 |
-| `KERNEL_ARTIFACT_URL` | secret 或 variable | kernel tar.gz 的下载地址（runner 可访问） |
-| `KERNEL_ARTIFACT_SHA256` | secret 或 variable，可选 | 不填则用 `build-info.json.artifact.sha256` |
+| `KERNEL_REGISTRY` | variable，可选 | 默认 `registry.ops.lingya.tech` |
+| `KERNEL_IMAGE` | variable，可选 | 默认 `registry.ops.lingya.tech/sumeru/sumeru-kernel` |
 | `DOCKERHUB_REPOSITORY` | variable，可选 | 默认 `sumeru-runtime` |
 
 镜像名：`${DOCKERHUB_USERNAME}/${DOCKERHUB_REPOSITORY:-sumeru-runtime}`。
 
-### kernel artifact 要求
+### kernel image 要求
 
-- tar.gz 解压后直接是 `build/` 的内容（`chrome`、`icudtl.dat`、`.pak`、`locales/` 等）；
-- **必须包含 `LICENSES.chromium.html`**；工作流会硬校验，缺失则拒绝发布；
-- `chrome` 的 SHA 必须与 `build-info.json.chromeSha256` 一致（`scripts/setup.mjs --check`）。
+- 镜像名：`registry.ops.lingya.tech/sumeru/sumeru-kernel`
+- tag：`<chromiumVersion>-<kernelCommit>`，例如 `156.0.8078.74-87e334d`
+- 内容：`/opt/sumeru/` 下的 `chrome`、`icudtl.dat`、`.pak`、`locales/`、GPU 库等；
+- **必须包含 `LICENSES.chromium.html`**；工作流会硬校验；
+- 私有仓库；运行时 workflow 通过 `docker cp` 取出 `/opt/sumeru`，不使用签名 URL。
 
-当前没有公开的 kernel Release；`KERNEL_ARTIFACT_URL` 可以指向私有对象存储的签名 URL
-（建议短期有效），或内部制品库。
+### kernel-build runner
+
+`kernel-build.yml` 需要 self-hosted runner：
+
+```text
+labels: self-hosted, linux, x64, sumeru-kernel
+Docker: 可用
+源码:   /src = Chromium 156.0.8078.74（含 .git、buildtools/linux64/gn、
+        third_party/ninja/ninja；首次构建需要网络拉 clang/sysroot）
+```
+
+Chromium 源码约 25 GB、构建 4–8 小时；不要用标准 `ubuntu-latest`。
 
 ### 发布行为
 
@@ -149,7 +170,7 @@ node scripts/version.mjs --tag v2.1.0
 
 ### 首次发布前
 
-1. 配置上述 secrets；
-2. 准备包含 `LICENSES.chromium.html` 的 kernel artifact；
-3. 手动跑一次 `release-image`（push=false）确认构建；
+1. 配置上述 secrets/vars；
+2. 在 self-hosted runner 跑 `kernel-build`，确认 kernel image 已推送并包含 license；
+3. 手动跑一次 `release-image`（push=false）确认拉取/构建；
 4. 再打 tag 触发正式推送。

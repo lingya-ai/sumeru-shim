@@ -1,6 +1,6 @@
 # 内核
 
-本仓库不包含完整 Chromium 源码；可自行构建，或使用维护者提供的 artifact。
+本仓库不包含完整 Chromium 源码；可自行构建，或从私有 registry 拉取内核镜像。
 当前**没有公开的预编译 Release**。
 
 ## 1. 版本与产物
@@ -11,9 +11,11 @@
 | 构建修订 | `87e334d`（见 `build-info.json`） |
 | GN 参数 | [`chromium/args.gn.linux`](../chromium/args.gn.linux)（`is_official_build=false`、`symbol_level=1`） |
 | 产物 | `build/chrome`，SHA256 见 `build-info.json` |
-| artifact | `sumeru-kernel-<chromium>-<revision>-linux-x64.tar.gz`（维护者/发布流程提供；当前无公开 Release） |
+| kernel image | `registry.ops.lingya.tech/sumeru/sumeru-kernel:<chromium>-<revision>`（私有；运行时从这里取 `/opt/sumeru`） |
+| archive | `sumeru-kernel-<chromium>-<revision>-linux-x64.tar.gz`（OSS 归档/SHA256；当前无公开 Release） |
 
-`build/` 是 gitignored；`npm run setup` 负责校验/解压本地 artifact。
+`build/` 是 gitignored。CI 从 kernel image 的 `/opt/sumeru` 取出内容；本地可用
+`npm run setup` 校验已有 `build/`，或解压归档。
 
 ## 2. 为什么源码不在仓库
 
@@ -21,7 +23,7 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 
 - **最小 overlay**：`chromium/overlay/current.patch`（对 pristine Chromium tag 的 diff）；
 - **构建入口**：`chromium/Dockerfile.kernel`、`chromium/scripts/build-kernel.sh`、`package-kernel.sh`；
-- **artifact + checksum**：按许可提供的交付物（当前无公开 Release）。
+- **kernel image + checksum**：私有 registry 交付物；archive 只做 OSS 归档/灾备。
 
 ## 3. overlay 内容
 
@@ -41,15 +43,26 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 # 1) 获取 pristine 源码（Chromium 156.0.8078.74）
 #    可用官方 tarball / Gitiles archive，或已有完整源码树
 
-# 2) 构建内核镜像（context 是 chromium/）
+# 2) 构建内核构建镜像（context 是 chromium/）
 docker build -f chromium/Dockerfile.kernel -t sumeru-kernel-build chromium
 
-# 3) 应用 overlay + gn/ninja（源码挂 /src，产物落 build/）
-docker run --rm -v /path/to/chromium/src:/src -v "$PWD/build:/out" sumeru-kernel-build
+# 3) 应用 overlay + gn/ninja（源码挂 /src，产物落 /src/out/release-linux）
+docker run --rm -v /path/to/chromium/src:/src sumeru-kernel-build
 
-# 4) 打包 artifact
-bash chromium/scripts/package-kernel.sh /out
+# 4) 打包 artifact（归档/备份）
+mkdir -p dist build
+SUMERU_SRC=/path/to/chromium/src SUMERU_VERSION=156.0.8078.74 \
+  SUMERU_COMMIT=87e334d bash chromium/scripts/package-kernel.sh dist
+tar -xzf dist/sumeru-kernel-*.tar.gz -C build
+
+# 5) 构建并推送 kernel image（私有 registry）
+docker build -f chromium/Dockerfile.kernel-artifact \
+  -t registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d \
+  build/
+docker push registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d
 ```
+
+CI 使用 `.github/workflows/kernel-build.yml`（self-hosted runner）。
 
 首次 4–8 h；增量 10–30 min。构建机要求 Linux x64、≥150 GB 磁盘、≥32 GB 内存。
 
@@ -58,8 +71,8 @@ bash chromium/scripts/package-kernel.sh /out
 1. 改 `chromium/VERSION` 与 `args.gn.linux`；
 2. 在新 tag 上 rebase `current.patch`（`git apply --3way`）；
 3. 构建 + 跑 smoke / acceptance；
-4. 更新 `build-info.json`（chromium/revision/SHA/artifact）；
-5. 发布新 artifact + 镜像。
+4. 更新 `build-info.json`（chromium/revision/kernelImage/kernelTag/SHA）；
+5. 发布新 kernel image + 运行时镜像；OSS 保留归档。
 
 ## 6. 稳定性修复
 
@@ -70,11 +83,19 @@ post 到 IO 线程。回归：`npm run acceptance:m09`。
 ## 7. 产物校验
 
 ```bash
+# 从私有 registry 取出内核文件（CI 使用同一方式）
+docker pull registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d
+CID="$(docker create registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d /bin/true)"
+rm -rf build && mkdir build
+docker cp "${CID}:/opt/sumeru/." build/
+docker rm "${CID}"
+
 npm run setup -- --check     # build/chrome 与 build-info.chromeSha256 比对
 npm run setup -- --from ./sumeru-kernel-*.tar.gz
 ```
 
-artifact 的 SHA256 记录在 `build-info.json`；发布时同时给 `SHA256SUMS`。
+kernel image 的 label 记录 chromium/revision/chrome SHA/overlay SHA；archive 的
+SHA256 记录在 `build-info.json`，发布时同时给 `SHA256SUMS`。
 
 ## 8. 相关文档
 

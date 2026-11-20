@@ -80,7 +80,9 @@ npm run up
 npm run smoke
 ```
 
-> 预编译 kernel artifact 不随仓库分发；当前公开 Release 已撤回。可自行构建（见 [docs/kernel.md](docs/kernel.md)），或从维护者获取 artifact 后使用 --from。
+> 内核镜像存放在私有 registry `registry.ops.lingya.tech/sumeru/sumeru-kernel`；
+> 没有公开的预编译 artifact。可自行构建（见 [docs/kernel.md](docs/kernel.md)），
+> 或从维护者获取归档后使用 `--from`。
 
 打开 **http://127.0.0.1:6901/vnc.html**，能看到原生 Chromium 窗口。
 
@@ -208,7 +210,7 @@ bin/                 CLI（sumeru.mjs）、MCP（sumeru-mcp.mjs）、容器启�
 test/                node:test 单测
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
-chromium/            内核版本、GN 参数、最小 overlay
+chromium/            内核版本、GN 参数、最小 overlay、kernel artifact Dockerfile
 docs/                架构、开发、运维、内核、排障、安全、版本、发布
 .github/workflows/   CI 与 Docker Hub 镜像发布
 vendor/novnc/        离线构建用 noVNC（MPL-2.0）
