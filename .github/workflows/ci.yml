@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install (no runtime deps)
+        run: npm install --ignore-scripts
+
+      - name: Version consistency
+        run: npm run version:check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Repo checks
+        run: npm run ci

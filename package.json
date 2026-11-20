@@ -27,6 +27,7 @@
     "scan-secrets": "node scripts/scan-secrets.mjs",
     "verify": "npm test && node scripts/setup.mjs --check && node scripts/scan-secrets.mjs",
     "ci": "node scripts/ci.mjs",
-    "release:check": "node scripts/release.mjs --check"
+    "release:check": "node scripts/release.mjs --check",
+    "version:check": "node scripts/version.mjs"
   }
 }

@@ -13,6 +13,18 @@
 ARG BASE_IMAGE=debian:bookworm-slim
 FROM ${BASE_IMAGE}
 
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG KERNEL_COMMIT=unknown
+LABEL org.opencontainers.image.title="Sumeru runtime" \
+      org.opencontainers.image.description="AI-native cloud browser: native Chromium + K-Gateway + thin shim" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0" \
+      org.opencontainers.image.source="https://github.com/lingya-ai/sumeru-shim" \
+      org.opencontainers.image.vendor="Sumeru" \
+      io.sumeru.kernel.commit="${KERNEL_COMMIT}"
+
 ENV TZ=Asia/Shanghai \
     NODE_ENV=production
 
@@ -68,6 +80,7 @@ RUN mkdir -p /etc/chromium/policies/managed \
 
 # 须弥内核（预构建 chrome，含 icudtl.dat/.pak/GPU 库等运行时文件）
 COPY build/ /opt/sumeru/
+COPY LICENSE LICENSE-COMMERCIAL.md THIRD_PARTY_NOTICES.md TRADEMARK.md /opt/sumeru/licenses/
 RUN chmod +x /opt/sumeru/chrome && ln -sf /opt/sumeru/chrome /usr/local/bin/chrome \
  && chmod 4755 /opt/sumeru/chrome-sandbox   # SUID 沙箱（去掉 --no-sandbox 警告）
 

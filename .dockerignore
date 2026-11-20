@@ -1,10 +1,11 @@
-# Keep the build context small: Dockerfile.runtime only needs
-# build/, src/, bin/, package.json and vendor/novnc.
+# Keep the build context small. Dockerfile.runtime needs:
+# build/, src/, bin/, package.json, vendor/novnc and the license files.
 symbols/
 *.debug
 *.unstripped
 node_modules/
 .git/
+.github/
 docs/
 scripts/
 test/
@@ -14,6 +15,9 @@ deploy/
 .dsh/
 README.md
 README.en.md
-LICENSE
-THIRD_PARTY_NOTICES.md
+CHANGELOG.md
+CLA.md
+CONTRIBUTING.md
 build-info.json
+# NOTE: LICENSE, LICENSE-COMMERCIAL.md, THIRD_PARTY_NOTICES.md and TRADEMARK.md
+# are intentionally included so the image can ship them under /opt/sumeru/licenses/.

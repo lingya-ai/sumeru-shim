@@ -9,6 +9,7 @@
 | [troubleshooting.md](troubleshooting.md) | 常见故障与已知边界 |
 | [security.md](security.md) | 权限模型、`/gw` 鉴权、`evaluateTarget` 风险 |
 | [../.dsh/skills/sumeru-browser/SKILL.md](../.dsh/skills/sumeru-browser/SKILL.md) | Agent skill：通过 MCP 操作云浏览器 |
+| [versioning.md](versioning.md) | 版本管理：SemVer、镜像标签、发布流程 |
 | [release-notes.md](release-notes.md) | 版本发布说明 |
 | [release-checklist.md](release-checklist.md) | 发布检查清单 |
 

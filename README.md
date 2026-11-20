@@ -209,7 +209,8 @@ test/                node:test 单测
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
 chromium/            内核版本、GN 参数、最小 overlay
-docs/                架构、开发、运维、内核、排障、安全、发布
+docs/                架构、开发、运维、内核、排障、安全、版本、发布
+.github/workflows/   CI 与 Docker Hub 镜像发布
 vendor/novnc/        离线构建用 noVNC（MPL-2.0）
 .dsh/skills/        Agent skills（MCP 浏览器操作）
 build/               内核产物（gitignored；由 setup 获取）
@@ -221,6 +222,8 @@ build/               内核产物（gitignored；由 setup 获取）
 - [docs/development.md](docs/development.md) — 本地开发/调试
 - [docs/operations.md](docs/operations.md) — 部署、健康、升级/回滚
 - [docs/kernel.md](docs/kernel.md) — 内核/overlay/artifact
+- [docs/versioning.md](docs/versioning.md) — 版本号/镜像标签/发布流程
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
 - [docs/troubleshooting.md](docs/troubleshooting.md) — 常见故障
 - [docs/security.md](docs/security.md) — 安全模型
 

@@ -219,7 +219,8 @@ test/                node:test checks
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
 chromium/            kernel version, GN args, minimal overlay
-docs/                architecture, development, operations, kernel, troubleshooting
+docs/                architecture, development, operations, kernel, troubleshooting, versioning
+.github/workflows/   CI and Docker Hub image release
 vendor/novnc/        noVNC (MPL-2.0) for offline image builds
 .dsh/skills/        agent skills (MCP browser operation)
 build/               kernel output (gitignored; fetched by setup)
@@ -231,6 +232,8 @@ build/               kernel output (gitignored; fetched by setup)
 - [docs/development.md](docs/development.md) — local development/debugging
 - [docs/operations.md](docs/operations.md) — deployment, health, upgrade/rollback
 - [docs/kernel.md](docs/kernel.md) — kernel/overlay/artifact
+- [docs/versioning.md](docs/versioning.md) — versions/image tags/release flow
+- [CHANGELOG.md](CHANGELOG.md) — changelog
 - [docs/troubleshooting.md](docs/troubleshooting.md) — troubleshooting
 - [docs/security.md](docs/security.md) — security model
 

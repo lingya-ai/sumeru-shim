@@ -34,7 +34,16 @@ npm run acceptance:m09
 - [ ] 镜像 `sumeru-runtime:v2.1.0`（如发布镜像）
 - [ ] `build-info.json` 的 `artifact.url` 指向新托管位置
 
-## 4. 托管（决定后执行）
+## 4. Docker Hub（GitHub Actions）
+
+- [ ] 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`
+- [ ] 配置 `KERNEL_ARTIFACT_URL`（及可选 `KERNEL_ARTIFACT_SHA256`）
+- [ ] 可选：`DOCKERHUB_REPOSITORY`（默认 `sumeru-runtime`）
+- [ ] 手动跑 `.github/workflows/release-image.yml`（push=false），确认 build 通过
+- [ ] 打 tag `vX.Y.Z` 并 push，触发镜像推送
+- [ ] 验证 Docker Hub 上的 `X.Y.Z` / `X.Y` / `latest` / `sha-*` 标签
+
+## 5. 托管（决定后执行）
 
 - [ ] 选择 artifact 托管
 - [ ] 上传 artifact 与 checksum
