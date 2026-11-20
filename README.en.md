@@ -156,6 +156,8 @@ curl -s http://127.0.0.1:8080/gw \
 
 ### MCP
 
+Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
+
 ```json
 {
   "command": "node",
@@ -219,6 +221,7 @@ deploy/              compose.yaml + .env.example
 chromium/            kernel version, GN args, minimal overlay
 docs/                architecture, development, operations, kernel, troubleshooting
 vendor/novnc/        noVNC (MPL-2.0) for offline image builds
+.dsh/skills/        agent skills (MCP browser operation)
 build/               kernel output (gitignored; fetched by setup)
 ```
 

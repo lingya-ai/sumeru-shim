@@ -151,6 +151,8 @@ curl -s http://127.0.0.1:8080/gw \
 
 ### MCP
 
+Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
+
 ```json
 {
   "command": "node",
@@ -209,6 +211,7 @@ deploy/              compose.yaml + .env.example
 chromium/            内核版本、GN 参数、最小 overlay
 docs/                架构、开发、运维、内核、排障、安全、发布
 vendor/novnc/        离线构建用 noVNC（MPL-2.0）
+.dsh/skills/        Agent skills（MCP 浏览器操作）
 build/               内核产物（gitignored；由 setup 获取）
 ```
 
