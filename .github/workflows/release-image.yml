@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       push:
-        description: Push the image to Docker Hub
+        description: "Push the image to Docker Hub"
         type: boolean
         default: false
       version:
@@ -48,17 +48,18 @@ jobs:
           node-version: "22"
 
       - name: Resolve and validate version
+        id: version
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            node scripts/version.mjs --tag "${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+            node scripts/version.mjs --tag "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' >> "${GITHUB_OUTPUT}"
           elif [ -n "${{ github.event.inputs.version }}" ]; then
-            node scripts/version.mjs --version "${{ github.event.inputs.version }}" >> "${GITHUB_ENV}"
+            node scripts/version.mjs --version "${{ github.event.inputs.version }}" | tr '[:upper:]' '[:lower:]' >> "${GITHUB_OUTPUT}"
           else
-            node scripts/version.mjs >> "${GITHUB_ENV}"
+            node scripts/version.mjs | tr '[:upper:]' '[:lower:]' >> "${GITHUB_OUTPUT}"
           fi
-          echo "KERNEL_COMMIT=$(node -p "require('./build-info.json').kernelCommit || 'unknown'")" >> "${GITHUB_ENV}"
-          echo "CHROMIUM_VERSION=$(node -p "require('./build-info.json').chromiumVersion || 'unknown'")" >> "${GITHUB_ENV}"
+          echo "kernel_commit=$(node -p "require('./build-info.json').kernelCommit || 'unknown'")" >> "${GITHUB_OUTPUT}"
+          echo "chromium_version=$(node -p "require('./build-info.json').chromiumVersion || 'unknown'")" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare kernel artifact
         run: |
@@ -94,16 +95,16 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ env.VERSION }}
-            type=raw,value=${{ env.MAJOR_MINOR }},enable=${{ env.IS_STABLE == 'true' }}
-            type=raw,value=latest,enable=${{ env.IS_STABLE == 'true' }}
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.major_minor }},enable=${{ steps.version.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.is_stable == 'true' }}
             type=sha,prefix=sha-,format=short
           labels: |
-            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
-            io.sumeru.kernel.commit=${{ env.KERNEL_COMMIT }}
-            io.sumeru.chromium.version=${{ env.CHROMIUM_VERSION }}
+            io.sumeru.kernel.commit=${{ steps.version.outputs.kernel_commit }}
+            io.sumeru.chromium.version=${{ steps.version.outputs.chromium_version }}
 
       - name: Login to Docker Hub
         if: github.event_name == 'push' || github.event.inputs.push == 'true'
@@ -124,9 +125,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ env.VERSION }}
+            VERSION=${{ steps.version.outputs.version }}
             REVISION=${{ github.sha }}
-            KERNEL_COMMIT=${{ env.KERNEL_COMMIT }}
+            KERNEL_COMMIT=${{ steps.version.outputs.kernel_commit }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
@@ -135,9 +136,9 @@ jobs:
       - name: Summary
         run: |
           echo "### Sumeru image" >> "$GITHUB_STEP_SUMMARY"
-          echo "- version: ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- channel: ${{ env.IS_STABLE == 'true' && 'stable' || 'prerelease' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- kernel: ${CHROMIUM_VERSION} / ${KERNEL_COMMIT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- version: ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- channel: ${{ steps.version.outputs.is_stable == 'true' && 'stable' || 'prerelease' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kernel: ${{ steps.version.outputs.chromium_version }} / ${{ steps.version.outputs.kernel_commit }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- tags:" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
