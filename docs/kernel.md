@@ -39,6 +39,9 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 
 ## 4. 构建
 
+本地/内网构建机执行（构建脚本由维护者本地维护，**不提交到仓库**）。
+以下为等价手动步骤：
+
 ```bash
 # 1) 获取 pristine 源码（Chromium 156.0.8078.74）
 #    可用官方 tarball / Gitiles archive，或已有完整源码树
@@ -62,7 +65,7 @@ docker build -f chromium/Dockerfile.kernel-artifact \
 docker push registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d
 ```
 
-CI 使用 `.github/workflows/kernel-build.yml`（self-hosted runner）。
+内核只在本地/内网构建机执行；GitHub 只从私有 registry 引用镜像，不编译 Chromium。
 
 首次 4–8 h；增量 10–30 min。构建机要求 Linux x64、≥150 GB 磁盘、≥32 GB 内存。
 

@@ -10,9 +10,9 @@ Keep a Changelog; versions follow Semantic Versioning.
 - Community Edition licensing: PolyForm Noncommercial 1.0.0 + commercial license.
 - `LICENSE-COMMERCIAL.md`, `CLA.md`, `CONTRIBUTING.md`, `TRADEMARK.md`.
 - MCP agent skill at `.dsh/skills/sumeru-browser/` (tools, recipes, troubleshooting).
-- GitHub Actions: `kernel-build` publishes immutable kernel images to the private
-  registry `registry.ops.lingya.tech`; `release-image` consumes them instead of a
-  signed artifact URL.
+- Local-only kernel publish flow (script not committed) publishes immutable
+  kernel images to the private registry `registry.ops.lingya.tech`; `release-image`
+  consumes them instead of a signed artifact URL. Chromium is never built on GitHub.
 - Versioning policy and `scripts/version.mjs` consistency check.
 - GitHub Actions release workflow for Docker Hub images.
 

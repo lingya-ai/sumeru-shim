@@ -107,7 +107,6 @@ node scripts/version.mjs --tag v2.1.0
 
 - `scripts/version.mjs`
 - `.github/workflows/ci.yml`
-- `.github/workflows/kernel-build.yml`
 - `.github/workflows/release-image.yml`
 - `chromium/Dockerfile.kernel-artifact`
 - `CHANGELOG.md`
@@ -121,8 +120,10 @@ node scripts/version.mjs --tag v2.1.0
 | 文件 | 触发 | 行为 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push `main` / PR / 手动 | `version:check`、单测、repo checks |
-| `.github/workflows/kernel-build.yml` | 手动 | 在 self-hosted runner 构建 Chromium，推送 kernel image |
-| `.github/workflows/release-image.yml` | tag `v*` / 手动 | 拉取 kernel image，构建 runtime image 并推送 Docker Hub |
+| `.github/workflows/release-image.yml` | tag `v*` / 手动 | **只拉取** kernel image，构建 runtime image 并推送 Docker Hub |
+
+**Chromium 构建不在 GitHub 上执行**；只允许在本地/内网构建机完成
+（构建脚本由维护者本地维护，不提交到仓库）。
 
 ### 必需 secrets / variables
 
@@ -145,21 +146,27 @@ node scripts/version.mjs --tag v2.1.0
 - 镜像名：`registry.ops.lingya.tech/sumeru/sumeru-kernel`
 - tag：`<chromiumVersion>-<kernelCommit>`，例如 `156.0.8078.74-87e334d`
 - 内容：`/opt/sumeru/` 下的 `chrome`、`icudtl.dat`、`.pak`、`locales/`、GPU 库等；
-- **必须包含 `LICENSES.chromium.html`**；工作流会硬校验；
+- **必须包含 `LICENSES.chromium.html`**；本地 publish 脚本和 runtime workflow 都会硬校验；
 - 私有仓库；运行时 workflow 通过 `docker cp` 取出 `/opt/sumeru`，不使用签名 URL。
 
-### kernel-build runner
+### 内核本地构建/发布
 
-`kernel-build.yml` 需要 self-hosted runner：
+GitHub 只引用镜像，不编译 Chromium。维护者在本地/内网构建机执行
+（脚本不提交到仓库；手动步骤见 [kernel.md](kernel.md) §4）：
 
-```text
-labels: self-hosted, linux, x64, sumeru-kernel
-Docker: 可用
-源码:   /src = Chromium 156.0.8078.74（含 .git、buildtools/linux64/gn、
-        third_party/ninja/ninja；首次构建需要网络拉 clang/sysroot）
+```bash
+docker login registry.ops.lingya.tech
+# 按 kernel.md 构建、打包并推送 kernel image
 ```
 
-Chromium 源码约 25 GB、构建 4–8 小时；不要用标准 `ubuntu-latest`。
+前置条件：
+
+```text
+Linux x64 / WSL2 + Docker
+源码: /src = Chromium 156.0.8078.74（含 .git、buildtools/linux64/gn、
+      third_party/ninja/ninja；首次构建需要网络拉 clang/sysroot）
+资源: ≥150 GB 磁盘、≥32 GB 内存；首次 4–8 小时
+```
 
 ### 发布行为
 
@@ -171,6 +178,6 @@ Chromium 源码约 25 GB、构建 4–8 小时；不要用标准 `ubuntu-latest`
 ### 首次发布前
 
 1. 配置上述 secrets/vars；
-2. 在 self-hosted runner 跑 `kernel-build`，确认 kernel image 已推送并包含 license；
+2. 在本地构建机构建并推送 kernel image（脚本不提交，步骤见 kernel.md），确认包含 license；
 3. 手动跑一次 `release-image`（push=false）确认拉取/构建；
 4. 再打 tag 触发正式推送。

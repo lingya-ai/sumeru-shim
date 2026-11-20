@@ -38,3 +38,6 @@ desktop.ini
 *.pak
 *.local.ps1
 *.local.mjs
+
+# 本地/内网构建脚本（不提交）
+/chromium/scripts/publish-kernel.sh

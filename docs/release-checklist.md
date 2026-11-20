@@ -29,7 +29,9 @@ npm run acceptance:m09
 
 ## 3. 内核镜像
 
-- [ ] `kernel-build` 已产出 `registry.ops.lingya.tech/sumeru/sumeru-kernel:<chromium>-<revision>`
+- [ ] 本地内网构建机已产出
+      `registry.ops.lingya.tech/sumeru/sumeru-kernel:<chromium>-<revision>`
+      （构建脚本不提交）
 - [ ] 镜像内 `/opt/sumeru/LICENSES.chromium.html` 存在
 - [ ] `build-info.json` 的 `kernelImage` / `kernelTag` 已更新
 - [ ] 可选：OSS 归档 tar.gz + SHA256
@@ -39,7 +41,7 @@ npm run acceptance:m09
 - [ ] 配置 `KERNEL_REGISTRY_USERNAME`、`KERNEL_REGISTRY_PASSWORD`
 - [ ] 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`
 - [ ] 可选：`KERNEL_REGISTRY`、`KERNEL_IMAGE`、`DOCKERHUB_REPOSITORY`
-- [ ] 手动跑 `.github/workflows/kernel-build.yml`，确认 kernel image 已推送
+- [ ] 本地已完成 kernel image 构建并推送（GitHub 不构建 Chromium）
 - [ ] 手动跑 `.github/workflows/release-image.yml`（push=false），确认拉取/构建
 - [ ] 打 tag `vX.Y.Z` 并 push，触发 runtime image 推送
 - [ ] 验证 Docker Hub 上的 `X.Y.Z` / `X.Y` / `latest` / `sha-*` 标签

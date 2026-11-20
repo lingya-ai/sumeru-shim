@@ -10,7 +10,9 @@ name: release-image
 # Optional variables:
 #   KERNEL_REGISTRY, KERNEL_IMAGE, DOCKERHUB_REPOSITORY
 #
-# The kernel must already be published by .github/workflows/kernel-build.yml.
+# The kernel image must already be published to the private registry by the
+# local `chromium/scripts/publish-kernel.sh --push` workflow. GitHub never
+# builds Chromium here.
 
 on:
   push:
