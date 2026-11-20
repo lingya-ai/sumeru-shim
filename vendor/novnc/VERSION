@@ -1,0 +1,4 @@
+source: https://github.com/novnc/noVNC
+commit: e8b5024d4603587b29ffede4fbd28b1fa2939829
+license: MPL-2.0 (see LICENSE.txt)
+vendored: 2026-11-19 for offline Docker build

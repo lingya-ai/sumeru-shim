@@ -1,0 +1,13 @@
+# gclient 配置模板（复制为 ../.gclient 后使用）
+# 说明：只声明 src 解决方案，custom_deps 保持为空——依赖由 Chromium 自身的 DEPS 决定。
+solutions = [
+  {
+    "name": "src",
+    "url": "https://chromium.googlesource.com/chromium/src.git",
+    "managed": False,
+    "custom_deps": {},
+    "custom_vars": {},
+  },
+]
+
+target_os = ["win"]

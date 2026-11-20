@@ -1,0 +1,118 @@
+# 须弥运行时镜像（使用预构建的 Linux 内核 chrome + 薄 shim 代理）
+#
+# gateway 形态：原生 Chromium 窗口 + gateway-only 操作面 + noVNC 观看。
+# 内核 chrome 由本地构建产出（build/chrome，已 strip），此处只做运行时打包：
+#   docker build -f Dockerfile.runtime -t sumeru-runtime:<tag> .
+#
+# shim 结构（gateway）：src/{index,runtime,startup,ime-text}.mjs +
+# src/ipc/gateway-client.mjs + bin/{start-all.sh,start-novnc.sh,sumeru-mcp.mjs}。
+# 已删除：heavens/bindings/viewer/host-ipc/checkpoint/transport/round。
+# Image hardening: pin the base by digest for reproducible builds.
+#   docker build --build-arg BASE_IMAGE=debian:bookworm-slim@sha256:<digest> ...
+# The default keeps the floating tag so local/dev builds still work.
+ARG BASE_IMAGE=debian:bookworm-slim
+FROM ${BASE_IMAGE}
+
+ENV TZ=Asia/Shanghai \
+    NODE_ENV=production
+
+# 构建时可选走代理（国内 deb.debian.org 直连很慢/卡）
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ENV http_proxy=$HTTP_PROXY \
+    https_proxy=$HTTPS_PROXY
+
+# 可选 Debian 镜像源（国内构建建议 mirrors.aliyun.com / mirrors.tuna.tsinghua.edu.cn）。
+# 默认保持官方源，便于境外/CI 复现；镜像源只影响拉包速度，不影响包内容。
+ARG DEBIAN_MIRROR=""
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+      sed -i "s|security.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+    fi
+
+# 运行时系统库（Chrome 依赖）+ 中文字体 + noVNC 远程控制组件
+# fcitx5 家族（IME 启动修复）：人类中文输入走镜像内 fcitx（noVNC 路径）。
+#   - GTK immodule 必须有：缺了 GTK_IM_MODULE=fcitx 就是空设（IME 缺失时的启动缺陷）
+#   - dbus-x11 提供 dbus-launch（fcitx5 单一实例桥）
+#   - SUMERU_IME 未设时不启动 fcitx；设了 fcitx 而二进制缺失则在 start-all.sh fail-fast
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates tini curl \
+      xvfb x11vnc python3-websockify git \
+      fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-qt5 dbus-x11 \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+      libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
+      libgbm1 libasound2 libpango-1.0-0 libcairo2 libglib2.0-0 \
+      libx11-6 libxcb1 libxext6 libxfixes3 libexpat1 libdbus-1-3 \
+      libxss1 libxtst6 libgtk-3-0 libpipewire-0.3-0 \
+      fonts-noto-cjk fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# noVNC（网页 VNC 客户端，供用户「看 + 操作」浏览器）
+# 离线优先：若构建上下文带 vendor/novnc 则直接 COPY（github 直连不可达时的
+# 回退路径）；否则回退 git clone。可用 `git clone --depth=1
+# https://github.com/novnc/noVNC.git vendor/novnc` 预下载后构建。
+COPY vendor/novnc* /usr/share/novnc/
+RUN ls /usr/share/novnc/vnc.html >/dev/null 2>&1 || \
+    (git clone --depth=1 https://github.com/novnc/noVNC.git /usr/share/novnc \
+     && rm -rf /usr/share/novnc/.git)
+
+# 默认搜索引擎 → Bing（Chromium 企业策略强制，地址栏搜索走必应）
+RUN mkdir -p /etc/chromium/policies/managed \
+ && printf '%s\n' \
+    '{' \
+    '  "DefaultSearchProviderEnabled": true,' \
+    '  "DefaultSearchProviderName": "Bing",' \
+    '  "DefaultSearchProviderSearchURL": "https://www.bing.com/search?q={searchTerms}",' \
+    '  "DefaultSearchProviderSuggestURL": "https://www.bing.com/osjson.aspx?query={searchTerms}"' \
+    '}' > /etc/chromium/policies/managed/bing.json
+
+# 须弥内核（预构建 chrome，含 icudtl.dat/.pak/GPU 库等运行时文件）
+COPY build/ /opt/sumeru/
+RUN chmod +x /opt/sumeru/chrome && ln -sf /opt/sumeru/chrome /usr/local/bin/chrome \
+ && chmod 4755 /opt/sumeru/chrome-sandbox   # SUID 沙箱（去掉 --no-sandbox 警告）
+
+# Node 22 运行时
+COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
+
+# 薄 shim（纯 ESM，无运行时依赖）：只有 src/ + bin/ 两个目录 + package.json
+WORKDIR /opt/sumeru/shim
+COPY package.json ./
+COPY src ./src
+COPY bin ./bin
+
+# 非 root；/data 与 /tmp 可写；/tmp/.X11-unix 由 root 预建（Xvfb 非 root 建不了）
+# chrome-sandbox 保持 root 所有 + setuid（SUID 沙箱；chown 会清 setuid，所以顺序在最后）
+RUN useradd -r -u 10001 chrome \
+ && mkdir -p /data/hot /data/profile /tmp/.X11-unix \
+ && chown -R chrome:chrome /data /opt/sumeru /tmp \
+ && chown root:root /opt/sumeru/chrome-sandbox \
+ && chmod 4755 /opt/sumeru/chrome-sandbox
+USER 10001
+VOLUME /data
+
+# gateway：无 CDP 参数、无 ledger/transport；唯一操作面 = gateway UDS（/data）。
+# SUMERU_IME 故意不设（未设 = ime 层恒 true + "ime:not-configured"）；
+# 需要中文输入时用 -e SUMERU_IME=fcitx（镜像已带 fcitx5，缺失则 start-all.sh fail-fast）。
+ENV SUMERU_CHROME_PATH=/opt/sumeru/chrome \
+    SUMERU_HEADLESS=0 \
+    HOME=/data \
+    SHIM_PORT=8080 \
+    SUMERU_GATEWAY=1 \
+    no_proxy=127.0.0.1,localhost \
+    NO_PROXY=127.0.0.1,localhost
+
+# 验收可选工具（像素断言用 xwd 抓根窗口）。默认 0 = 产品镜像不含；
+# 放在文件末尾 + 显式切回 root，避免影响前面昂贵层的缓存。
+#   docker build --build-arg INSTALL_CAPTURE_TOOLS=1 -t sumeru-runtime:sumeru-accept .
+ARG INSTALL_CAPTURE_TOOLS=0
+USER root
+RUN if [ "$INSTALL_CAPTURE_TOOLS" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends x11-apps \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+USER 10001
+
+EXPOSE 8080 6901
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash", "/opt/sumeru/shim/bin/start-all.sh"]
+

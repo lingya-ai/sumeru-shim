@@ -1,0 +1,3052 @@
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 5aa5b04..a814ff3 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -126,6 +126,10 @@ source_set("browser_features") {
+ source_set("browser_process") {
+   sources = [
+     "browser_process.cc",
++    "sumeru/tabs/sumeru_last_tab_guard.cc",
++    "sumeru/tabs/sumeru_last_tab_guard.h",
++    "sumeru/tabs/sumeru_tab_ops.cc",
++    "sumeru/tabs/sumeru_tab_ops.h",
+     "browser_process.h",
+   ]
+   deps = [
+diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_browser_main.cc
+index b2619ba..477682d 100644
+--- a/chrome/browser/chrome_browser_main.cc
++++ b/chrome/browser/chrome_browser_main.cc
+@@ -34,6 +34,7 @@
+ #include "chrome/browser/browser_features.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/browser_process_impl.h"
++#include "chrome/browser/sumeru/tabs/sumeru_tab_ops.h"
+ #include "chrome/browser/chrome_browser_main_extra_parts.h"
+ #include "chrome/browser/component_updater/registration.h"
+ #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+@@ -1505,6 +1506,9 @@ int ChromeBrowserMainParts::PostCreateThreads() {
+ 
+ int ChromeBrowserMainParts::PreMainMessageLoopRun() {
+   TRACE_EVENT0("startup", "ChromeBrowserMainParts::PreMainMessageLoopRun");
++ // Sumeru (gateway): agent tab operations go through the real
++ // TabStripModel so tabs are visible to humans and capturable.
++  sumeru::InstallSumeruTabOps();
+ 
+   result_code_ = PreMainMessageLoopRunImpl();
+ 
+diff --git a/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.cc b/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.cc
+new file mode 100644
+index 0000000..ed2d951
+--- /dev/null
++++ b/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.cc
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/sumeru/tabs/sumeru_last_tab_guard.h"
++
++#include <cstdlib>
++#include <string>
++
++#include "chrome/browser/lifetime/browser_shutdown.h"
++#include "sumeru/browser/tabs/tab_ops.h"
++
++namespace sumeru {
++
++bool ShouldBlockLastTabClose(int tab_count) {
++  if (tab_count > 1) {
++    return false;
++  }
++  if (!content::sumeru::IsKeepLastTabEnabled()) {
++    return false;
++  }
++ // Shutdown must complete: blocking here would turn `docker stop` into a
++ // fifteen-second grace period followed by SIGKILL, losing the profile writes
++ // that make tabs/cookies survive a restart.
++  if (browser_shutdown::IsTryingToQuit()) {
++    return false;
++  }
++  return true;
++}
++
++}  // namespace sumeru
+diff --git a/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.h b/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.h
+new file mode 100644
+index 0000000..5299edc
+--- /dev/null
++++ b/chrome/browser/sumeru/tabs/sumeru_last_tab_guard.h
+@@ -0,0 +1,25 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_SUMERU_TABS_SUMERU_LAST_TAB_GUARD_H_
++#define CHROME_BROWSER_SUMERU_TABS_SUMERU_LAST_TAB_GUARD_H_
++
++namespace sumeru {
++
++// The product is a single-window browser: if the last tab could be closed, the
++// window (and with it the whole browser process) would go away. Keeping one tab
++// alive makes "the browser never exits because a tab was closed" a structural
++// property instead of a convention.
++//
++// Enabled unless SUMERU_KEEP_LAST_TAB=0 (the switch itself lives in
++// `sumeru/browser/tabs/tab_ops.h` so content code can share the same policy).
++//
++// True when a close that would empty a `tab_count`-tab strip must be refused.
++// Quit paths pass through: SIGTERM -> AttemptExit -> IsTryingToQuit(), so the
++// container still stops gracefully and flushes the profile.
++bool ShouldBlockLastTabClose(int tab_count);
++
++}  // namespace sumeru
++
++#endif  // CHROME_BROWSER_SUMERU_TABS_SUMERU_LAST_TAB_GUARD_H_
+diff --git a/chrome/browser/sumeru/tabs/sumeru_tab_ops.cc b/chrome/browser/sumeru/tabs/sumeru_tab_ops.cc
+new file mode 100644
+index 0000000..fcabb19
+--- /dev/null
++++ b/chrome/browser/sumeru/tabs/sumeru_tab_ops.cc
+@@ -0,0 +1,169 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/sumeru/tabs/sumeru_tab_ops.h"
++
++#include <string>
++#include <vector>
++
++#include "base/no_destructor.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_enums.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/web_contents.h"
++#include "sumeru/browser/tabs/tab_ops.h"
++#include "url/gurl.h"
++
++namespace sumeru {
++namespace {
++
++// DevTools target ids are "<type>:<uuid>" and are the ids the gateway speaks;
++// deriving them here keeps agent ids identical to CDP ids (as TabRegistry did).
++std::string TargetIdFor(content::WebContents* contents) {
++  if (!contents) {
++    return std::string();
++  }
++  auto agent_host = content::DevToolsAgentHost::GetOrCreateFor(contents);
++  return agent_host ? agent_host->GetId() : std::string();
++}
++
++BrowserWindowInterface* ActiveBrowser() {
++  GlobalBrowserCollection* collection = GlobalBrowserCollection::GetInstance();
++  return collection ? collection->GetLastActiveBrowser() : nullptr;
++}
++
++class SumeruTabOps : public content::sumeru::TabOpsDelegate {
++ public:
++  std::string CreateTab(const GURL& url) override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return std::string();
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return std::string();
++    }
++    content::WebContents* contents = chrome::AddAndReturnTabAt(
++        browser, url.is_empty() ? GURL("about:blank") : url, tabs->count(),
++        /*foreground=*/false);
++    return TargetIdFor(contents);
++  }
++
++  bool CloseTab(const std::string& target_id) override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return false;
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return false;
++    }
++    const int index = IndexOf(tabs, target_id);
++    if (index < 0) {
++      return false;
++    }
++    tabs->CloseWebContentsAt(index, CLOSE_USER_GESTURE);
++    return true;
++  }
++
++  bool ActivateTab(const std::string& target_id) override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return false;
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return false;
++    }
++    const int index = IndexOf(tabs, target_id);
++    if (index < 0) {
++      return false;
++    }
++    tabs->ActivateTabAt(index);
++    return true;
++  }
++
++  std::vector<content::sumeru::TabSnapshot> ListTabs() override {
++    std::vector<content::sumeru::TabSnapshot> out;
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return out;
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return out;
++    }
++    const int active = tabs->active_index();
++    for (int i = 0; i < tabs->count(); ++i) {
++      content::WebContents* contents = tabs->GetWebContentsAt(i);
++      if (!contents) {
++        continue;
++      }
++      content::sumeru::TabSnapshot entry;
++      entry.target_id = TargetIdFor(contents);
++      entry.url = contents->GetLastCommittedURL().spec();
++      entry.title = base::UTF16ToUTF8(contents->GetTitle());
++      entry.active = (i == active);
++      out.push_back(std::move(entry));
++    }
++    return out;
++  }
++
++  int TabCount() override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return 0;
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    return tabs ? tabs->count() : 0;
++  }
++
++  std::string GetActiveTargetId() override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return std::string();
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return std::string();
++    }
++    return TargetIdFor(tabs->GetActiveWebContents());
++  }
++
++  content::WebContents* GetWebContents(const std::string& target_id) override {
++    BrowserWindowInterface* browser = ActiveBrowser();
++    if (!browser) {
++      return nullptr;
++    }
++    TabStripModel* tabs = browser->GetTabStripModel();
++    if (!tabs) {
++      return nullptr;
++    }
++    const int index = IndexOf(tabs, target_id);
++    return index < 0 ? nullptr : tabs->GetWebContentsAt(index);
++  }
++
++ private:
++  static int IndexOf(TabStripModel* tabs, const std::string& target_id) {
++    for (int i = 0; i < tabs->count(); ++i) {
++      if (TargetIdFor(tabs->GetWebContentsAt(i)) == target_id) {
++        return i;
++      }
++    }
++    return -1;
++  }
++};
++
++}  // namespace
++
++void InstallSumeruTabOps() {
++  static base::NoDestructor<SumeruTabOps> tab_ops;
++  content::sumeru::SetTabOpsDelegate(tab_ops.get());
++}
++
++}  // namespace sumeru
+diff --git a/chrome/browser/sumeru/tabs/sumeru_tab_ops.h b/chrome/browser/sumeru/tabs/sumeru_tab_ops.h
+new file mode 100644
+index 0000000..daa9b13
+--- /dev/null
++++ b/chrome/browser/sumeru/tabs/sumeru_tab_ops.h
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_SUMERU_TABS_SUMERU_TAB_OPS_H_
++#define CHROME_BROWSER_SUMERU_TABS_SUMERU_TAB_OPS_H_
++
++namespace sumeru {
++
++// Installs the TabStripModel-backed TabOpsDelegate used by the sumeru gateway
++// (gateway). Safe to call more than once; UI thread only.
++void InstallSumeruTabOps();
++
++}  // namespace sumeru
++
++#endif  // CHROME_BROWSER_SUMERU_TABS_SUMERU_TAB_OPS_H_
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
+index e03b98f..647b274 100644
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -66,6 +66,7 @@
+ #include "chrome/browser/ui/tabs/tab_model.h"
+ #include "chrome/browser/ui/tabs/tab_muted_utils.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
++#include "chrome/browser/sumeru/tabs/sumeru_last_tab_guard.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+ #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
+ #include "chrome/browser/ui/tabs/tab_utils.h"
+@@ -3994,6 +3995,22 @@ tabs::TabInterface* TabStripModel::GetTabForWebContents(
+ 
+ void TabStripModel::CloseTabs(base::span<content::WebContents* const> items,
+                               uint32_t close_types) {
++ // Sumeru: the strip must never empty while the browser is running, otherwise
++ // Browser::TabStripEmpty() closes the window and the process exits. Every
++ // close path (Ctrl+W, the tab's close button, middle click, CloseAllTabs)
++ // funnels through here, so one guard covers them all. Quit paths pass
++ // through, which keeps `docker stop` graceful.
++  if (sumeru::ShouldBlockLastTabClose(count()) &&
++      static_cast<int>(items.size()) >= count()) {
++    for (content::WebContents* contents : items) {
++      tabs::TabInterface* tab = GetTabForWebContents(contents);
++      for (auto& observer : observers_) {
++        observer.OnTabCloseCancelled(tab);
++      }
++    }
++    return;
++  }
++
+   std::vector<content::WebContents*> filtered_items;
+   for (content::WebContents* contents : items) {
+     tabs::TabInterface* tab = GetTabForWebContents(contents);
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+index 3162721..86694d8 100644
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -1211,6 +1211,16 @@ source_set("browser") {
+     "renderer_preferences_util.cc",
+     "renderer_preferences_util.h",
+     "web_contents_based_canceller.cc",
++    "../../sumeru/browser/gateway/sumeru_gateway.cc",
++    "../../sumeru/browser/gateway/sumeru_gateway.h",
++    "../../sumeru/browser/gateway/sumeru_gateway_start.h",
++    "../../sumeru/browser/tabs/tab_ops.cc",
++    "../../sumeru/browser/tabs/tab_ops.h",
++    "../../sumeru/browser/tabs/tab_registry.cc",
++    "../../sumeru/browser/tabs/tab_registry.h",
++    "../../sumeru/browser/snapshot/snapshot_serializer.cc",
++    "../../sumeru/browser/snapshot/snapshot_serializer.h",
++    "renderer_host/sumeru_page_capture.cc",
+     "web_contents_based_canceller.h",
+ 
+     # TODO(crbug.com/202736352): This is built even if enable_screen_capture is
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index 0559ec1..023dc53 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "content/browser/browser_main_loop.h"
+ 
++#include "sumeru/browser/gateway/sumeru_gateway_start.h"
++
+ #include <stddef.h>
+ 
+ #include <algorithm>
+@@ -1040,6 +1042,10 @@ int BrowserMainLoop::PostCreateThreads() {
+ }
+ 
+ int BrowserMainLoop::PreMainMessageLoopRun() {
++ // Sumeru K-Gateway (gateway): the browser process's external control
++ // channel. Env-gated; no-ops unless SUMERU_GATEWAY=1.
++  sumeru::StartGateway(nullptr);
++
+   TRACE_EVENT0("startup", "BrowserMainLoop::PreMainMessageLoopRun");
+ 
+   auto font_render_params =
+diff --git a/content/browser/renderer_host/sumeru_page_capture.cc b/content/browser/renderer_host/sumeru_page_capture.cc
+new file mode 100644
+index 0000000..6c03aaf
+--- /dev/null
++++ b/content/browser/renderer_host/sumeru_page_capture.cc
+@@ -0,0 +1,79 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/public/browser/sumeru_page_capture.h"
++
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "base/time/time.h"
++#include "components/viz/common/frame_sinks/copy_output_result.h"
++#include "content/browser/renderer_host/render_widget_host_view_base.h"
++#include "content/public/browser/render_widget_host_view.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/gfx/codec/png_codec.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/size.h"
++
++namespace content::sumeru {
++namespace {
++
++// 5 s covers the first frame after a tab activation (capture) and still keeps a
++// broken viz path from hanging the gateway request forever.
++constexpr base::TimeDelta kCaptureTimeout = base::Seconds(5);
++
++void OnCopied(CapturePagePngCallback callback,
++              const content::CopyFromSurfaceResult& result) {
++  if (!result.has_value()) {
++    LOG(ERROR) << "[SUMERU-CAPTURE] CopyFromSurface failed code="
++               << static_cast<int>(result.error());
++    std::move(callback).Run(std::vector<uint8_t>(), false);
++    return;
++  }
++  const SkBitmap& bitmap = result.value().bitmap;
++  if (bitmap.isNull() || bitmap.empty()) {
++    LOG(ERROR) << "[SUMERU-CAPTURE] empty bitmap";
++    std::move(callback).Run(std::vector<uint8_t>(), false);
++    return;
++  }
++ // This tree's PNGCodec returns std::optional<std::vector<uint8_t>>.
++  std::optional<std::vector<uint8_t>> encoded =
++      gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, /*discard_transparency=*/false);
++  if (!encoded || encoded->empty()) {
++    LOG(ERROR) << "[SUMERU-CAPTURE] png encode failed";
++    std::move(callback).Run(std::vector<uint8_t>(), false);
++    return;
++  }
++  std::vector<uint8_t> png = std::move(*encoded);
++  LOG(ERROR) << "[SUMERU-CAPTURE] ok " << bitmap.width() << "x"
++             << bitmap.height() << " png=" << png.size();
++  std::move(callback).Run(std::move(png), true);
++}
++
++}  // namespace
++
++void CapturePagePng(WebContents* contents, CapturePagePngCallback callback) {
++  if (!contents) {
++    std::move(callback).Run(std::vector<uint8_t>(), false);
++    return;
++  }
++  RenderWidgetHostView* view = contents->GetRenderWidgetHostView();
++  if (!view) {
++    LOG(ERROR) << "[SUMERU-CAPTURE] no RenderWidgetHostView";
++    std::move(callback).Run(std::vector<uint8_t>(), false);
++    return;
++  }
++ // The public view interface has no CopyFromSurface; the platform base
++ // implementation does (content/browser internal is fine inside content).
++  auto* base_view = static_cast<RenderWidgetHostViewBase*>(view);
++  base_view->CopyFromSurface(
++      gfx::Rect(), gfx::Size(), kCaptureTimeout,
++      base::BindOnce(&OnCopied, std::move(callback)));
++}
++
++}  // namespace content::sumeru
++
++
++
+diff --git a/content/public/browser/sumeru_page_capture.h b/content/public/browser/sumeru_page_capture.h
+new file mode 100644
+index 0000000..d0ca8ce
+--- /dev/null
++++ b/content/public/browser/sumeru_page_capture.h
+@@ -0,0 +1,34 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_PUBLIC_BROWSER_SUMERU_PAGE_CAPTURE_H_
++#define CONTENT_PUBLIC_BROWSER_SUMERU_PAGE_CAPTURE_H_
++
++#include <cstdint>
++#include <vector>
++
++#include "base/functional/callback.h"
++#include "content/common/content_export.h"
++
++namespace content {
++class WebContents;
++}  // namespace content
++
++namespace content::sumeru {
++
++// capture: capture ONLY the page's rendered surface — no browser chrome,
++// no window decorations. The X11/noVNC frame intentionally includes the Views
++// top bar / control bar; this API is the independent source that proves the
++// page itself excludes them.
++//
++// The PNG bytes are empty on failure (|ok| is false).
++using CapturePagePngCallback =
++    base::OnceCallback<void(std::vector<uint8_t> png, bool ok)>;
++
++CONTENT_EXPORT void CapturePagePng(WebContents* contents,
++                                   CapturePagePngCallback callback);
++
++}  // namespace content::sumeru
++
++#endif  // CONTENT_PUBLIC_BROWSER_SUMERU_PAGE_CAPTURE_H_
+diff --git a/sumeru/browser/gateway/sumeru_gateway.cc b/sumeru/browser/gateway/sumeru_gateway.cc
+new file mode 100644
+index 0000000..a66953c
+--- /dev/null
++++ b/sumeru/browser/gateway/sumeru_gateway.cc
+@@ -0,0 +1,1755 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "sumeru/browser/gateway/sumeru_gateway.h"
++
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <set>
++#include <optional>
++#include <utility>
++
++#include <algorithm>
++#include <vector>
++#include "base/base64.h"
++#include "base/trace_event/trace_config.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/logging.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/task/thread_pool.h"
++#include "base/uuid.h"
++#include "base/time/time.h"
++#include "base/values.h"
++#include "content/public/browser/browser_thread.h"
++#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/sumeru_page_capture.h"
++#include "content/public/browser/browser_context.h"
++#include "content/public/browser/tracing_controller.h"
++#include "content/browser/web_contents/web_contents_impl.h"
++#include "components/input/native_web_keyboard_event.h"
++#include "sumeru/browser/snapshot/snapshot_serializer.h"
++#include "sumeru/browser/tabs/tab_ops.h"
++#include "sumeru/browser/tabs/tab_registry.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "ui/events/keycodes/dom/keycode_converter.h"
++#include "content/public/browser/web_contents.h"
++#include "net/base/io_buffer.h"
++#include "net/base/ip_address.h"
++#include "net/base/ip_endpoint.h"
++#include "net/base/net_errors.h"
++
++namespace content::sumeru {
++namespace {
++
++constexpr int kMaxFrameBytes = 1 << 20;  // 1 MiB, host-IPC v2 parity.
++
++std::string ReadTokenFromEnv() {
++  const char* tok = std::getenv("SUMERU_GATEWAY_TOKEN");
++  return tok ? std::string(tok) : std::string("sumeru-gateway");
++}
++
++void SendValue(net::StreamSocket* sock, base::Value msg) {
++  std::string line;
++  base::JSONWriter::Write(msg, &line);
++  line.push_back('\n');
++ // Small control frames: attempt a bounded sync-style write loop. If the
++ // socket reports ERR_IO_PENDING the single posted callback owns the data
++ // (a member buffer keeps it alive); partial writes are re-driven there.
++  auto buf = base::MakeRefCounted<net::DrainableIOBuffer>(
++      base::MakeRefCounted<net::StringIOBuffer>(line), line.size());
++  int rv = sock->Write(buf.get(), buf->BytesRemaining(),
++                       base::BindOnce([](int) {}),
++                       net::DefineNetworkTrafficAnnotation(
++                           "sumeru_gateway", "Sumeru control gateway"));
++ // Synchronous completion (the common case for small frames).
++ // Asynchronous: the callback above fires and the kernel owns the buffer;
++ // for the gateway protocol's small single-line frames this is acceptable.
++  (void)rv;
++  LOG(ERROR) << "[SUMERU-GW] send: "
++             << line.substr(0, line.size() > 160 ? 160 : line.size());
++}
++
++
++}  // namespace
++
++// gateway events: a static instance handle lets the mutating request handlers
++// notify subscribers without threading the pointer through. Events carry
++// a monotonic per-connection seq and a global revision (state generation).
++SumeruGateway* g_gateway = nullptr;
++
++void StartGateway(content::BrowserContext* browser_context) {
++  const char* enabled = std::getenv("SUMERU_GATEWAY");
++  if (!enabled || std::string(enabled) != "1") {
++    return;
++  }
++ // The UDS async I/O must live on the browser IO thread (DCHECK in
++ // current_thread.cc); hop there before constructing the socket.
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(FROM_HERE, base::BindOnce([](content::BrowserContext* ctx) {
++        static SumeruGateway* instance = nullptr;
++        if (instance) {
++          return;
++        }
++        instance = new SumeruGateway();
++        instance->set_browser_context(ctx);
++        g_gateway = instance;
++        instance->DoAcceptLoop();
++        LOG(ERROR) << "[SUMERU-GW] started on IO thread";
++      }, browser_context));
++}
++
++void SumeruGateway::Start() {
++  StartGateway(nullptr);
++}
++
++SumeruGateway::SumeruGateway()
++    : token_(ReadTokenFromEnv()),
++      server_session_(base::Uuid::GenerateRandomV4().AsLowercaseString()) {
++  const char* path_env = std::getenv("SUMERU_GATEWAY_SOCKET");
++  const std::string path = path_env ? std::string(path_env)
++                                    : std::string("/data/sumeru-gateway.sock");
++ // Raw POSIX unlink: socket-path hygiene without triggering the IO thread's
++ // blocking-disallowed DCHECK (base::DeleteFile would).
++  unlink(path.c_str());
++  server_ = std::make_unique<net::UnixDomainServerSocket>(
++      base::BindRepeating([](const net::UnixDomainServerSocket::Credentials&) {
++        return true;  // Any local peer; peer gating can be added later.
++      }),
++      /*use_abstract_socket=*/false);
++ // The shim keeps one long-lived connection; gates/diagnostics add their own.
++ // A backlog of 1 left every additional client hitting EAGAIN on connect.
++  int rv = server_->BindAndListen(path, /*backlog=*/16);
++  if (rv != net::OK) {
++    LOG(ERROR) << "[SUMERU-GW] listen failed rv=" << rv << " path=" << path;
++    server_.reset();
++    return;
++  }
++  chmod(path.c_str(), 0600);
++}
++
++SumeruGateway::~SumeruGateway() = default;
++
++void SumeruGateway::DoAcceptLoop() {
++  if (!server_) {
++    return;
++  }
++  pending_client_.reset();
++  int rv = server_->Accept(
++      &pending_client_,
++      base::BindOnce(&SumeruGateway::OnAccepted, weak_factory_.GetWeakPtr()));
++  if (rv != net::ERR_IO_PENDING) {
++    OnAccepted(rv);
++  }
++}
++
++void SumeruGateway::OnAccepted(int rv) {
++  if (rv == net::OK && pending_client_) {
++    client_ = std::move(pending_client_);
++  }
++  pending_client_.reset();
++  pending_client_.reset();
++  if (rv != net::OK) {
++    LOG(ERROR) << "[SUMERU-GW] accept rv=" << rv;
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&SumeruGateway::DoAcceptLoop,
++                                  weak_factory_.GetWeakPtr()));
++    return;
++  }
++  authenticated_ = false;
++  read_buffer_.clear();
++  StartRead();
++}
++
++void SumeruGateway::StartRead() {
++  if (!client_) {
++    return;
++  }
++ // The socket API requires the caller's IOBuffer to stay alive until the
++ // read callback fires; use a member buffer (a local scoped_refptr is
++ // destroyed on ERR_IO_PENDING — use-after-free, root cause of the
++ // welcome-never-arrives symptom found 2026-11-17).
++  read_io_buffer_ = base::MakeRefCounted<net::IOBufferWithSize>(4096);
++  int rv = client_->Read(read_io_buffer_.get(), read_io_buffer_->size(),
++                          base::BindOnce(&SumeruGateway::OnRead,
++                                         weak_factory_.GetWeakPtr()));
++  if (rv == net::ERR_IO_PENDING) {
++    return;
++  }
++  OnRead(rv);
++}
++
++void SumeruGateway::OnRead(int rv) {
++  if (!client_) {
++    return;
++  }
++  if (rv < 0) {
++    CloseConnection();
++    return;
++  }
++  if (rv == 0) {
++    // Peer closed the connection.
++    CloseConnection();
++    return;
++  }
++  read_buffer_.append(read_io_buffer_->data(), rv);
++  read_io_buffer_.reset();
++  for (;;) {
++    size_t nl = read_buffer_.find('\n');
++    if (nl == std::string::npos) {
++      if (read_buffer_.size() > kMaxFrameBytes) {
++        CloseConnection();
++        return;
++      }
++      break;
++    }
++    std::string line = read_buffer_.substr(0, nl);
++    read_buffer_.erase(0, nl + 1);
++    if (!line.empty()) {
++      HandleLine(line);
++      if (!client_) {
++        return;
++      }
++    }
++  }
++  StartRead();
++}
++
++void SumeruGateway::HandleLine(const std::string& line) {
++  auto parsed = base::JSONReader::Read(line, /*options=*/0);
++  if (!parsed || !parsed->is_dict()) {
++    base::DictValue err;
++    err.Set("type", "error");
++    err.Set("code", "GW_BAD_JSON");
++    Send(base::Value(std::move(err)));
++    CloseConnection();
++    return;
++  }
++  const base::Value& msg = *parsed;
++  const base::DictValue& md = msg.GetDict();
++  const std::string* type = md.FindString("type");
++  if (!authenticated_) {
++    if (type && *type == "hello") {
++      HandleHello(msg);
++      return;
++    }
++    base::DictValue err;
++    err.Set("type", "error");
++    err.Set("code", "GW_BAD_HANDSHAKE");
++    Send(base::Value(std::move(err)));
++    CloseConnection();
++    return;
++  }
++  if (type && *type == "request") {
++    HandleRequest(msg);
++    return;
++  }
++  base::DictValue err;
++  err.Set("type", "error");
++  err.Set("code", "GW_BAD_REQUEST");
++  Send(base::Value(std::move(err)));
++}
++
++void SumeruGateway::HandleHello(const base::Value& msg_value) {
++  const base::DictValue& msg = msg_value.GetDict();
++  const std::string* tok = msg.FindString("token");
++  bool version_ok = false;
++  const base::ListValue* versions = msg.FindList("versions");
++  if (versions) {
++    for (const auto& v : *versions) {
++      if (v.is_int() && v.GetInt() == 2) {
++        version_ok = true;
++      }
++    }
++  }
++  if (!tok || *tok != token_ || !version_ok) {
++    base::DictValue err;
++    err.Set("type", "error");
++    err.Set("code",
++            tok && *tok != token_ ? "GW_UNAUTHORIZED" : "GW_VERSION_MISMATCH");
++    Send(base::Value(std::move(err)));
++    CloseConnection();
++    return;
++  }
++  authenticated_ = true;
++  base::DictValue welcome;
++  welcome.Set("type", "welcome");
++  welcome.Set("version", 2);
++  welcome.Set("serverSession", server_session_);
++  Send(base::Value(std::move(welcome)));
++}
++
++void SumeruGateway::HandleRequest(const base::Value& msg_value) {
++  const base::DictValue& msg = msg_value.GetDict();
++  const std::string* method = msg.FindString("method");
++  const base::DictValue* params = msg.FindDict("params");
++  int rid = 0;
++  if (std::optional<double> idv = msg.FindDouble("id")) {
++    rid = static_cast<int>(*idv);
++  }
++  const int req_id = rid;
++  base::DictValue resp;
++  resp.Set("type", "response");
++  resp.Set("id", req_id);
++  auto fail = [&](const std::string& code, const std::string& message) {
++    base::DictValue e;
++    e.Set("code", code);
++    e.Set("message", message);
++    resp.Set("ok", false);
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++  };
++  auto ok = [&](base::DictValue result) {
++    resp.Set("ok", true);
++    resp.Set("result", std::move(result));
++    Send(base::Value(std::move(resp)));
++  };
++ // NOTE(F22): okWithEvent was removed — all state methods now run on the
++ // UI thread and reply through PostResultAndEvent/inline bindings.
++  if (!method) {
++    fail("GW_BAD_REQUEST", "missing method");
++    return;
++  }
++
++ // epoch gate: mutating commands may carry
++ // expectedControlEpoch. A stale epoch means control changed since the
++ // caller last observed (takeover already happened) — the queued
++ // old-epoch command must not fire.
++
++  if (*method == "ping") {
++    base::DictValue r;
++    r.Set("pong", true);
++    ok(std::move(r));
++    return;
++  }
++  if (*method == "imeCompose") {
++    HandleImeCompose(*params, req_id);
++    return;
++  }
++  if (*method == "dispatchKey") {
++    HandleDispatchKey(*params, req_id);
++    return;
++  }
++  if (*method == "dispatchMouse") {
++    HandleDispatchMouse(*params, req_id);
++    return;
++  }
++  if (*method == "createTab") {
++    const std::string* tab_url = params ? params->FindString("url") : nullptr;
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, std::string url, int req_id) {
++                  if (!self->browser_context_) {
++                    const auto all = content::WebContentsImpl::GetAllWebContents();
++                    if (!all.empty()) {
++                      self->set_browser_context(all.front()->GetBrowserContext());
++                    }
++                  }
++                  if (!self->browser_context_) {
++                    self->PostFailure(0, req_id, "SUMERU_NO_CONTEXT",
++                                      "no browser context yet");
++                    return;
++                  }
++                  // Gateway: prefer the embedder's TabStripModel
++                  // delegate (real, visible, capturable tabs); fall back to the
++                  // content-only registry when no delegate is installed.
++                  std::string target;
++                  if (content::sumeru::TabOpsDelegate* ops =
++                          content::sumeru::GetTabOpsDelegate()) {
++                    target = ops->CreateTab(GURL(url));
++                  } else {
++                    content::WebContents::CreateParams create_params(
++                        self->browser_context_);
++                    auto contents = content::WebContents::Create(create_params);
++                    if (!url.empty() && url != "about:blank") {
++                      content::NavigationController::LoadURLParams load{
++                          GURL(url)};
++                      load.transition_type = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
++                      contents->GetController().LoadURLWithParams(load);
++                    }
++                    target = content::sumeru::TabRegistry::Register(
++                        std::move(contents));
++                  }
++                  if (target.empty()) {
++                    self->PostFailure(0, req_id, "SUMERU_CREATE_TAB_REFUSED",
++                                      "no browser window available");
++                    return;
++                  }
++                  base::DictValue ev;
++                  ev.Set("targetId", target);
++                  self->PostResultAndEvent(0, req_id, "tabCreated",
++                                           std::move(ev));
++                },
++                this, tab_url ? *tab_url : std::string("about:blank"),
++                req_id));
++    return;
++  }
++  if (*method == "startTracing" || *method == "stopTracing") {
++    // Local diagnostic trace contract — explicit start/stop, drained to
++    // a file, no debug port. The renderer/BeginFrame categories let a gate
++    // correlate lease windows with real frame submissions.
++    const bool is_start = *method == "startTracing";
++    const std::string* cat = params ? params->FindString("categories") : nullptr;
++    const std::string* out_path = params ? params->FindString("path") : nullptr;
++    const std::string categories =
++        cat ? *cat
++            : std::string(
++                  "toplevel,disabled-by-default-devtools.timeline,"
++                  "disabled-by-default-devtools.timeline.frame");
++    const std::string path =
++        out_path ? *out_path : std::string("/data/sumeru-trace.json");
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, bool is_start, std::string categories,
++                   std::string path, int req_id) {
++                  content::TracingController* controller =
++                      content::TracingController::GetInstance();
++                  bool ok = false;
++                  if (controller) {
++                    if (is_start) {
++                      base::trace_event::TraceConfig config(
++                          categories, "record-continuously");
++                      ok = controller->StartTracing(config, base::DoNothing());
++                    } else {
++                      ok = controller->StopTracing(
++                          content::TracingController::CreateFileEndpoint(
++                              base::FilePath(path), base::DoNothing()));
++                    }
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(
++                          FROM_HERE,
++                          base::BindOnce(
++                              [](SumeruGateway* self, int req_id, bool ok,
++                                 bool is_start, std::string path) {
++                                base::DictValue resp;
++                                resp.Set("type", "response");
++                                resp.Set("id", req_id);
++                                if (!ok) {
++                                  resp.Set("ok", false);
++                                  base::DictValue e;
++                                  e.Set("code", "SUMERU_TRACE_FAILED");
++                                  e.Set("message",
++                                        "tracing controller refused");
++                                  resp.Set("error", std::move(e));
++                                } else {
++                                  base::DictValue r;
++                                  r.Set("tracing", is_start);
++                                  r.Set("path", path);
++                                  resp.Set("ok", true);
++                                  resp.Set("result", std::move(r));
++                                }
++                                self->Send(base::Value(std::move(resp)));
++                              },
++                              self, req_id, ok, is_start, path));
++                },
++                this, is_start, categories, path, req_id));
++    return;
++  }
++  if (*method == "closeTab") {
++    const std::string* target = params ? params->FindString("targetId") : nullptr;
++    if (!target || target->empty()) {
++      fail("GW_INVALID_ARGUMENT", "targetId required");
++      return;
++    }
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, std::string target, int req_id) {
++                  bool ok = false;
++                  content::sumeru::TabOpsDelegate* ops =
++                      content::sumeru::GetTabOpsDelegate();
++                  // The product keeps at least one tab open: a single-tab
++                  // window must not lose its last tab, or the browser exits.
++                  // The chrome-side TabStripModel guard enforces the same rule
++                  // for human closes; here we answer honestly so the caller
++                  // does not read ok:true for a no-op.
++                  const int tab_count =
++                      ops ? ops->TabCount()
++                          : static_cast<int>(
++                                content::sumeru::TabRegistry::List().size());
++                  if (tab_count <= 1 &&
++                      content::sumeru::IsKeepLastTabEnabled()) {
++                    self->PostFailure(0, req_id, "SUMERU_LAST_TAB_PROTECTED",
++                                      "refusing to close the last tab "
++                                      "(SUMERU_KEEP_LAST_TAB=0 disables this)");
++                    return;
++                  }
++                  if (ops) {
++                    ok = ops->CloseTab(target);
++                  } else {
++                    ok = content::sumeru::TabRegistry::Close(target);
++                  }
++                  if (!ok) {
++                    self->PostFailure(0, req_id, "SUMERU_CLOSE_TAB_REFUSED",
++                                      "unknown target");
++                    return;
++                  }
++                  base::DictValue ev;
++                  ev.Set("targetId", target);
++                  self->PostResultAndEvent(0, req_id, "tabClosed",
++                                           std::move(ev));
++                },
++                this, *target, req_id));
++    return;
++  }
++  if (*method == "listTabs") {
++    // Gateway: tab listing is browser-domain; the delegate must run on
++    // the UI thread, and the response is posted back to the IO thread.
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, int req_id) {
++                  base::ListValue tabs;
++                  if (content::sumeru::TabOpsDelegate* ops =
++                          content::sumeru::GetTabOpsDelegate()) {
++                    for (const auto& e : ops->ListTabs()) {
++                      base::DictValue t;
++                      t.Set("targetId", e.target_id);
++                      t.Set("url", e.url);
++                      t.Set("title", e.title);
++                      t.Set("active", e.active);
++                      t.Set("openedBy", "agent");
++                      tabs.Append(std::move(t));
++                    }
++                  } else {
++                    for (const auto& e : content::sumeru::TabRegistry::List()) {
++                      base::DictValue t;
++                      t.Set("targetId", e.target_id);
++                      t.Set("url", e.url);
++                      t.Set("title", e.title);
++                      t.Set("active", e.active);
++                      t.Set("openedBy", e.opened_by);
++                      tabs.Append(std::move(t));
++                    }
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(
++                          FROM_HERE,
++                          base::BindOnce(
++                              [](SumeruGateway* self, int req_id,
++                                 base::ListValue tabs) {
++                                base::DictValue resp;
++                                resp.Set("type", "response");
++                                resp.Set("id", req_id);
++                                resp.Set("ok", true);
++                                base::DictValue r;
++                                r.Set("tabs", std::move(tabs));
++                                resp.Set("result", std::move(r));
++                                self->Send(base::Value(std::move(resp)));
++                              },
++                              self, req_id, std::move(tabs)));
++                },
++                this, req_id));
++    return;
++  }
++  if (*method == "activateTab") {
++    const std::string* target = params ? params->FindString("targetId") : nullptr;
++    if (!target || target->empty()) {
++      fail("GW_INVALID_ARGUMENT", "targetId required");
++      return;
++    }
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, std::string target, int req_id) {
++                  bool activated = false;
++                  if (content::sumeru::TabOpsDelegate* ops =
++                          content::sumeru::GetTabOpsDelegate()) {
++                    activated = ops->ActivateTab(target);
++                  } else {
++                    content::sumeru::TabRegistry::SetActive(target);
++                    activated = true;
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(
++                          FROM_HERE,
++                          base::BindOnce(
++                              [](SumeruGateway* self, int req_id,
++                                 std::string target, bool activated) {
++                                base::DictValue resp;
++                                resp.Set("type", "response");
++                                resp.Set("id", req_id);
++                                if (!activated) {
++                                  resp.Set("ok", false);
++                                  base::DictValue e;
++                                  e.Set("code", "SUMERU_ACTIVATE_TAB_REFUSED");
++                                  e.Set("message", "unknown target");
++                                  resp.Set("error", std::move(e));
++                                } else {
++                                  resp.Set("ok", true);
++                                  base::DictValue r;
++                                  r.Set("activated", target);
++                                  resp.Set("result", std::move(r));
++                                }
++                                self->Send(base::Value(std::move(resp)));
++                              },
++                              self, req_id, target, activated));
++                },
++                this, *target, req_id));
++    return;
++  }
++  if (*method == "captureScreenshot") {
++    // gateway: capture the PAGE surface only (no browser chrome) as base64 PNG.
++    const std::string* shot_target =
++        params ? params->FindString("targetId") : nullptr;
++    if (!shot_target || shot_target->empty()) {
++      fail("GW_INVALID_ARGUMENT", "targetId required");
++      return;
++    }
++    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++        ->PostTask(
++            FROM_HERE,
++            base::BindOnce(
++                [](SumeruGateway* self, std::string target, int req_id) {
++                  content::WebContents* contents = nullptr;
++                  if (content::sumeru::TabOpsDelegate* ops =
++                          content::sumeru::GetTabOpsDelegate()) {
++                    // capture: capture is promised for the active tab.
++                    // Activate the target first so the surface exists.
++                    if (ops->GetActiveTargetId() != target) {
++                      ops->ActivateTab(target);
++                    }
++                    contents = ops->GetWebContents(target);
++                  }
++                  if (!contents) {
++                    scoped_refptr<content::DevToolsAgentHost> host =
++                        content::DevToolsAgentHost::GetForId(target);
++                    contents = host ? host->GetWebContents() : nullptr;
++                  }
++                  if (!contents) {
++                    content::BrowserThread::GetTaskRunnerForThread(
++                        content::BrowserThread::IO)
++                        ->PostTask(
++                            FROM_HERE,
++                            base::BindOnce(
++                                [](SumeruGateway* self, int req_id) {
++                                  base::DictValue resp;
++                                  resp.Set("type", "response");
++                                  resp.Set("id", req_id);
++                                  resp.Set("ok", false);
++                                  base::DictValue e;
++                                  e.Set("code", "SUMERU_SCREENSHOT_FAILED");
++                                  e.Set("message", "unknown target");
++                                  resp.Set("error", std::move(e));
++                                  self->Send(base::Value(std::move(resp)));
++                                },
++                                self, req_id));
++                    return;
++                  }
++                  // capture: capture the active tab. A tab that was
++                  // just activated needs one frame before its surface exists,
++                  // so the copy runs on a short delay; the contents is
++                  // re-resolved inside the delayed task (no dangling pointer).
++                  // IncrementCapturerCount(stay_hidden=false) makes the
++                  // renderer produce frames for the capture.
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::UI)
++                      ->PostDelayedTask(
++                          FROM_HERE,
++                          base::BindOnce(
++                              [](SumeruGateway* self, std::string target,
++                                 int req_id) {
++                                content::WebContents* contents = nullptr;
++                                if (content::sumeru::TabOpsDelegate* ops =
++                                        content::sumeru::GetTabOpsDelegate()) {
++                                  contents = ops->GetWebContents(target);
++                                }
++                                if (!contents) {
++                                  scoped_refptr<content::DevToolsAgentHost>
++                                      host =
++                                          content::DevToolsAgentHost::GetForId(
++                                              target);
++                                  contents =
++                                      host ? host->GetWebContents() : nullptr;
++                                }
++                                if (!contents) {
++                                  content::BrowserThread::
++                                      GetTaskRunnerForThread(
++                                          content::BrowserThread::IO)
++                                          ->PostTask(
++                                              FROM_HERE,
++                                              base::BindOnce(
++                                                  [](SumeruGateway* self,
++                                                     int req_id) {
++                                                    base::DictValue resp;
++                                                    resp.Set("type", "response");
++                                                    resp.Set("id", req_id);
++                                                    resp.Set("ok", false);
++                                                    base::DictValue e;
++                                                    e.Set(
++                                                        "code",
++                                                        "SUMERU_SCREENSHOT_"
++                                                        "FAILED");
++                                                    e.Set("message",
++                                                          "unknown target");
++                                                    resp.Set("error",
++                                                             std::move(e));
++                                                    self->Send(base::Value(
++                                                        std::move(resp)));
++                                                  },
++                                                  self, req_id));
++                                  return;
++                                }
++                                base::ScopedClosureRunner capturer =
++                                    contents->IncrementCapturerCount(
++                                        /*capture_size=*/gfx::Size(),
++                                        /*stay_hidden=*/false,
++                                        /*stay_awake=*/false,
++                                        /*is_activity=*/true);
++                                content::sumeru::CapturePagePng(
++                                    contents,
++                                    base::BindOnce(
++                                        [](base::ScopedClosureRunner capturer,
++                                           SumeruGateway* self, int req_id,
++                                           std::vector<uint8_t> png,
++                                           bool ok) {
++                                          content::BrowserThread::
++                                              GetTaskRunnerForThread(
++                                                  content::BrowserThread::IO)
++                                                  ->PostTask(
++                                                      FROM_HERE,
++                                                      base::BindOnce(
++                                                          [](SumeruGateway*
++                                                                 self,
++                                                             int req_id,
++                                                             std::vector<
++                                                                 uint8_t>
++                                                                 png,
++                                                             bool ok) {
++                                                            base::DictValue
++                                                                resp;
++                                                            resp.Set(
++                                                                "type",
++                                                                "response");
++                                                            resp.Set("id",
++                                                                     req_id);
++                                                            if (!ok ||
++                                                                png.empty()) {
++                                                              resp.Set("ok",
++                                                                       false);
++                                                              base::DictValue
++                                                                  e;
++                                                              e.Set(
++                                                                  "code",
++                                                                  "SUMERU_"
++                                                                  "SCREENSHOT_"
++                                                                  "FAILED");
++                                                              e.Set(
++                                                                  "message",
++                                                                  "capture "
++                                                                  "failed");
++                                                              resp.Set(
++                                                                  "error",
++                                                                  std::move(
++                                                                      e));
++                                                            } else {
++                                                              base::DictValue r;
++                                                              r.Set(
++                                                                  "pngBase64",
++                                                                  base::Base64Encode(
++                                                                      png));
++                                                              r.Set(
++                                                                  "bytes",
++                                                                  static_cast<
++                                                                      int>(
++                                                                      png.size()));
++                                                              resp.Set(
++                                                                  "ok", true);
++                                                              resp.Set(
++                                                                  "result",
++                                                                  std::move(
++                                                                      r));
++                                                            }
++                                                            self->Send(
++                                                                base::Value(
++                                                                    std::move(
++                                                                        resp)));
++                                                          },
++                                                          self, req_id,
++                                                          std::move(png), ok));
++                                        },
++                                        std::move(capturer), self, req_id));
++                              },
++                              self, target, req_id),
++                          base::Milliseconds(250));
++                },
++                this, *shot_target, req_id));
++    return;
++  }
++  if (*method == "snapshotAX") {
++    HandleSnapshotAX(*params, req_id);
++    return;
++  }
++  if (*method == "evaluateTarget") {
++    HandleEvaluate(*params, req_id);
++    return;
++  }
++  if (*method == "navigateTarget") {
++    HandleNavigate(*params, req_id);
++    return;
++  }
++  fail("GW_UNKNOWN_METHOD", "unknown method: " + *method);
++}
++
++void SumeruGateway::Send(const base::Value& msg) {
++  if (client_) {
++    SendValue(client_.get(), msg.Clone());
++  }
++}
++
++void SumeruGateway::BroadcastEvent(const std::string& event,
++                                    base::DictValue payload) {
++  if (!client_ || !subscribed_) {
++    // Revision still advances for non-subscribers (snapshot consistency).
++    revision_ += 1;
++    return;
++  }
++  revision_ += 1;
++  last_seq_sent_ += 1;
++  base::DictValue msg;
++  msg.Set("type", "event");
++  msg.Set("event", event);
++  msg.Set("payload", std::move(payload));
++  msg.Set("seq", last_seq_sent_);
++  msg.Set("revision", revision_);
++  Send(base::Value(std::move(msg)));
++}
++
++void SumeruGateway::FailPendingEval(int eid, const std::string& code,
++                                    const std::string& message) {
++ // Called on the UI thread; hop to IO to send.
++  auto it = eval_pending_.find(eid);
++  if (it == eval_pending_.end()) {
++    return;
++  }
++  double req_id = it->second.req_id;
++  eval_pending_.erase(it);
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, double r_id,
++                 const std::string& c, const std::string& m) {
++                base::DictValue resp;
++                resp.Set("type", "response");
++                resp.Set("id", r_id);
++                resp.Set("ok", false);
++                base::DictValue e;
++                e.Set("code", c);
++                e.Set("message", m);
++                resp.Set("error", std::move(e));
++                self->Send(base::Value(std::move(resp)));
++              },
++              this, req_id, code, message));
++}
++
++// Gateway: target ids are DevTools ids of real TabStripModel tabs. The
++// embedder's delegate resolves them first; the agent-host scan is the fallback
++// for content-only builds. UI thread only.
++content::WebContents* ResolveTargetContents(const std::string& target_id) {
++  if (content::sumeru::TabOpsDelegate* ops =
++          content::sumeru::GetTabOpsDelegate()) {
++    if (content::WebContents* contents = ops->GetWebContents(target_id)) {
++      return contents;
++    }
++  }
++  for (content::WebContents* contents :
++       content::WebContentsImpl::GetAllWebContents()) {
++    if (!contents) {
++      continue;
++    }
++    scoped_refptr<content::DevToolsAgentHost> host =
++        content::DevToolsAgentHost::GetForTab(contents);
++    if (host && host->GetId() == target_id) {
++      return contents;
++    }
++    host = content::DevToolsAgentHost::GetOrCreateFor(contents);
++    if (host && host->GetId() == target_id) {
++      return contents;
++    }
++  }
++  return nullptr;
++}
++void SumeruGateway::HandleNavigate(const base::DictValue& params,
++                                    double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  const std::string* url = params.FindString("url");
++  if (!target_id || target_id->empty() || !url) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "GW_INVALID_ARGUMENT");
++    e.Set("message", "targetId and url required");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  const std::string tid = *target_id;
++  const std::string dest = *url;
++  int eid = eval_next_id_++;
++  eval_pending_[eid] = {eid, req_id, tid};
++ // navigate fix: navigate completes on Page.loadEventFired, not on the
++ // Page.navigate reply (which only means the navigation started).
++  nav_awaiting_commit_.insert(eid);
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, int e_id, const std::string& t_id,
++                 const std::string& dest_url) {
++                // same agent-path restructure as
++                // HandleEvaluate — setAutoAttach is (re)sent whenever the
++                // session is empty so repeat navigations to the same target
++                // cannot queue forever; the session is kept across requests.
++                if (!self->eval_agent_ ||
++                    self->eval_agent_->GetId() != t_id) {
++                  if (self->eval_agent_) {
++                    self->eval_agent_->DetachClient(self);
++                  }
++                  self->eval_agent_ =
++                      content::DevToolsAgentHost::GetForId(t_id);
++                  if (!self->eval_agent_) {
++                    // Gateway: real tabs may only be reachable through
++                    // the embedder delegate.
++                    if (content::WebContents* eval_contents =
++                            ResolveTargetContents(t_id)) {
++                      self->eval_agent_ =
++                          content::DevToolsAgentHost::GetOrCreateFor(
++                              eval_contents);
++                    }
++                  }
++                  if (!self->eval_agent_) {
++                    self->FailPendingEval(
++                        e_id, "SUMERU_TASK_SPACE_NOT_FOUND",
++                        "no target: " + t_id);
++                    return;
++                  }
++                  if (!self->eval_agent_->AttachClient(self)) {
++                    self->eval_agent_ = nullptr;
++                    self->FailPendingEval(
++                        e_id, "SUMERU_OPERATION_FAILED", "attach failed");
++                    return;
++                  }
++                }
++                // fix (2026-11-19): no-session dispatch. The page-level
++                // DevToolsAgentHost routes empty-sessionId commands to the
++                // main session (devtools_session.cc); the Target.setAutoAttach
++                // child-session wait never fires for detached WebContents.
++                //
++                // navigate fix: Page.enable first so Page.loadEventFired is
++                // emitted; the response is deferred to that event.
++                base::DictValue enable;
++                enable.Set("id", 900000002);
++                enable.Set("method", "Page.enable");
++                std::string enable_line;
++                base::JSONWriter::Write(base::Value(std::move(enable)),
++                                        &enable_line);
++                self->eval_agent_->DispatchProtocolMessage(
++                    self, base::as_byte_span(enable_line));
++
++                base::DictValue call;
++                call.Set("id", e_id);
++                call.Set("method", "Page.navigate");
++                base::DictValue cparams;
++                cparams.Set("url", dest_url);
++                call.Set("params", std::move(cparams));
++                std::string line;
++                base::JSONWriter::Write(base::Value(std::move(call)), &line);
++                self->eval_agent_->DispatchProtocolMessage(
++                    self, base::as_byte_span(line));
++              },
++              this, eid, tid, dest));
++}
++
++
++void SumeruGateway::PostFailure(int sid_v, int req_id,
++                                const std::string& code,
++                                const std::string& message) {
++ // Called on the UI thread; the response goes to the IO thread.
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, int req_id,
++                 const std::string& code, const std::string& message) {
++                base::DictValue resp;
++                resp.Set("type", "response");
++                resp.Set("id", req_id);
++                resp.Set("ok", false);
++                base::DictValue e;
++                e.Set("code", code);
++                e.Set("message", message);
++                resp.Set("error", std::move(e));
++                self->Send(base::Value(std::move(resp)));
++              },
++              this, req_id, code, message));
++}
++
++void SumeruGateway::PostResultAndEvent(int sid_v, int req_id,
++                                        const std::string& event,
++                                        base::DictValue payload) {
++ // Events have no subscribers in the single-window contraction (subscribe is
++ // retired); only the response reaches the caller.
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, int req_id, base::DictValue payload) {
++                base::DictValue resp;
++                resp.Set("type", "response");
++                resp.Set("id", req_id);
++                resp.Set("ok", true);
++                resp.Set("result", std::move(payload));
++                self->Send(base::Value(std::move(resp)));
++              },
++              this, req_id, std::move(payload)));
++}
++
++
++void SumeruGateway::HandleImeCompose(const base::DictValue& params,
++                                      double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  const std::string* text = params.FindString("text");
++  const std::string* commit = params.FindString("commit");
++  const std::optional<int> sel = params.FindInt("selectionStart");
++  if (!target_id || target_id->empty() || !text) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "GW_INVALID_ARGUMENT");
++    e.Set("message", "targetId and text required");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  const std::string tid = *target_id;
++  const std::u16string text16 = base::UTF8ToUTF16(*text);
++  const std::u16string commit16 = commit ? base::UTF8ToUTF16(*commit) : std::u16string();
++  const int sel_start = sel.value_or(static_cast<int>(text16.size()));
++  const int sel_end = sel_start;
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, double req_id, const std::string& t_id,
++                 const std::u16string& comp, const std::u16string& commit,
++                 int sel_start, int sel_end) {
++                // K3 gap #3: the browser input pipeline (the CDP
++                // InputHandler's RenderWidgetHost pattern — isTrusted on the
++                // page).
++                content::WebContents* matched = ResolveTargetContents(t_id);
++                auto send_resp = [&](bool ok, const std::string& code,
++                                     const std::string& message) {
++                  base::DictValue resp;
++                  resp.Set("type", "response");
++                  resp.Set("id", req_id);
++                  resp.Set("ok", ok);
++                  if (ok) {
++                    base::DictValue r;
++                    r.Set("composed", base::UTF16ToUTF8(comp));
++                    r.Set("committed", base::UTF16ToUTF8(commit));
++                    resp.Set("result", std::move(r));
++                  } else {
++                    base::DictValue e;
++                    e.Set("code", code);
++                    e.Set("message", message);
++                    resp.Set("error", std::move(e));
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(FROM_HERE,
++                                 base::BindOnce(
++                                     [](SumeruGateway* self,
++                                        base::Value msg) {
++                                       self->Send(std::move(msg));
++                                     },
++                                     self, base::Value(std::move(resp))));
++                };
++                if (!matched || !matched->GetPrimaryMainFrame()) {
++                  send_resp(false, "SUMERU_TASK_SPACE_NOT_FOUND",
++                            "no target: " + t_id);
++                  return;
++                }
++                auto* widget_host = static_cast<content::RenderWidgetHostImpl*>(
++                    matched->GetPrimaryMainFrame()->GetRenderWidgetHost());
++                if (!widget_host) {
++                  send_resp(false, "SUMERU_OPERATION_FAILED",
++                            "no render widget host");
++                  return;
++                }
++                widget_host->Focus();
++                if (!comp.empty()) {
++                  widget_host->GetWidgetInputHandler()->ImeSetComposition(
++                      comp, std::vector<ui::ImeTextSpan>(),
++                      gfx::Range::InvalidRange(), sel_start, sel_end,
++                      blink::mojom::ImeState::kNone, blink::DOMNodeIdType(),
++                      base::OnceClosure());
++                }
++                if (!commit.empty()) {
++                  widget_host->GetWidgetInputHandler()->ImeCommitText(
++                      commit, std::vector<ui::ImeTextSpan>(),
++                      gfx::Range::InvalidRange(), 0, blink::DOMNodeIdType(),
++                      base::OnceClosure());
++                }
++                send_resp(true, "", "");
++              },
++              this, req_id, tid, text16, commit16, sel_start, sel_end));
++}
++
++
++void SumeruGateway::HandleDispatchKey(const base::DictValue& params,
++                                       double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  const std::string* type = params.FindString("type");
++  if (!target_id || target_id->empty() || !type) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "GW_INVALID_ARGUMENT");
++    e.Set("message", "targetId and type required");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  const std::string tid = *target_id;
++  const std::string key_type = *type;
++  const std::string key = params.FindString("key") ? *params.FindString("key") : "";
++  const std::string code = params.FindString("code") ? *params.FindString("code") : "";
++  const std::string key_text = params.FindString("text") ? *params.FindString("text") : "";
++  const int wvk = params.FindInt("windowsVirtualKeyCode").value_or(0);
++  const int nvk = params.FindInt("nativeVirtualKeyCode").value_or(0);
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, double req_id, const std::string& t_id,
++                 const std::string& key_type, const std::string& key,
++                 const std::string& code, const std::string& key_text,
++                 int wvk, int nvk) {
++                auto send_resp = [&](bool ok, const std::string& code_e,
++                                     const std::string& message,
++                                     const std::string& dispatched) {
++                  base::DictValue resp;
++                  resp.Set("type", "response");
++                  resp.Set("id", req_id);
++                  resp.Set("ok", ok);
++                  if (ok) {
++                    base::DictValue r;
++                    r.Set("dispatched", dispatched);
++                    resp.Set("result", std::move(r));
++                  } else {
++                    base::DictValue e;
++                    e.Set("code", code_e);
++                    e.Set("message", message);
++                    resp.Set("error", std::move(e));
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(FROM_HERE,
++                                 base::BindOnce(
++                                     [](SumeruGateway* self,
++                                        base::Value msg) {
++                                       self->Send(std::move(msg));
++                                     },
++                                     self, base::Value(std::move(resp))));
++                };
++                blink::WebInputEvent::Type web_type;
++                if (key_type == "keyDown") {
++                  web_type = blink::WebInputEvent::Type::kKeyDown;
++                } else if (key_type == "keyUp") {
++                  web_type = blink::WebInputEvent::Type::kKeyUp;
++                } else if (key_type == "char") {
++                  web_type = blink::WebInputEvent::Type::kChar;
++                } else if (key_type == "rawKeyDown") {
++                  web_type = blink::WebInputEvent::Type::kRawKeyDown;
++                } else {
++                  send_resp(false, "GW_INVALID_ARGUMENT",
++                            "type must be keyDown|keyUp|rawKeyDown|char", "");
++                  return;
++                }
++                content::WebContents* matched = ResolveTargetContents(t_id);
++                if (!matched || !matched->GetPrimaryMainFrame()) {
++                  send_resp(false, "SUMERU_TASK_SPACE_NOT_FOUND",
++                            "no target: " + t_id, "");
++                  return;
++                }
++                auto* widget_host = static_cast<content::RenderWidgetHostImpl*>(
++                    matched->GetPrimaryMainFrame()->GetRenderWidgetHost());
++                if (!widget_host) {
++                  send_resp(false, "SUMERU_OPERATION_FAILED",
++                            "no render widget host", "");
++                  return;
++                }
++                input::NativeWebKeyboardEvent event(
++                    web_type, blink::WebInputEvent::kNoModifiers,
++                    base::TimeTicks::Now());
++                if (!key_text.empty()) {
++                  // text is std::array<char16_t, kTextLengthCap> — copy, no
++                  // operator= for strings.
++                  const auto u16 = base::UTF8ToUTF16(key_text);
++                  const size_t n = std::min(u16.size(), size_t{15});
++                  for (size_t k = 0; k < n; ++k) event.text[k] = u16[k];
++                }
++                if (!code.empty()) {
++                  event.dom_code = static_cast<int>(
++                      ui::KeycodeConverter::CodeStringToDomCode(code));
++                }
++                if (!key.empty()) {
++                  event.dom_key = static_cast<int>(
++                      ui::KeycodeConverter::KeyStringToDomKey(key));
++                }
++                if (wvk) event.windows_key_code = wvk;
++                if (nvk) event.native_key_code = nvk;
++                widget_host->Focus();
++                widget_host->ForwardKeyboardEventWithLatencyInfo(
++                    event, ui::LatencyInfo());
++                send_resp(true, "", "", key_type);
++              },
++              this, req_id, tid, key_type, key, code, key_text, wvk, nvk));
++}
++
++
++void SumeruGateway::HandleDispatchMouse(const base::DictValue& params,
++                                         double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  const std::string* type = params.FindString("type");
++  if (!target_id || target_id->empty() || !type) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "GW_INVALID_ARGUMENT");
++    e.Set("message", "targetId and type required");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  const std::string tid = *target_id;
++  const std::string mouse_type = *type;
++  const int mx = params.FindInt("x").value_or(0);
++  const int my = params.FindInt("y").value_or(0);
++  const std::string button = params.FindString("button")
++                                 ? *params.FindString("button")
++                                 : (mouse_type == "mouseMoved" ? "none" : "left");
++  const int clicks = params.FindInt("clickCount").value_or(mouse_type == "mouseMoved" ? 0 : 1);
++  const int dx = params.FindInt("deltaX").value_or(0);
++  const int dy = params.FindInt("deltaY").value_or(0);
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, double req_id, const std::string& t_id,
++                 const std::string& mouse_type, int mx, int my,
++                 const std::string& button, int clicks, int dx, int dy) {
++                auto send_resp = [&](bool ok, const std::string& code_e,
++                                     const std::string& message,
++                                     const std::string& dispatched) {
++                  base::DictValue resp;
++                  resp.Set("type", "response");
++                  resp.Set("id", req_id);
++                  resp.Set("ok", ok);
++                  if (ok) {
++                    base::DictValue r;
++                    r.Set("dispatched", dispatched);
++                    resp.Set("result", std::move(r));
++                  } else {
++                    base::DictValue e;
++                    e.Set("code", code_e);
++                    e.Set("message", message);
++                    resp.Set("error", std::move(e));
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(FROM_HERE,
++                                 base::BindOnce(
++                                     [](SumeruGateway* self,
++                                        base::Value msg) {
++                                       self->Send(std::move(msg));
++                                     },
++                                     self, base::Value(std::move(resp))));
++                };
++                content::WebContents* matched = ResolveTargetContents(t_id);
++                if (!matched) {
++                  send_resp(false, "SUMERU_TARGET_NOT_FOUND",
++                            "no web contents for target", "");
++                  return;
++                }
++                auto* rwhv = matched->GetRenderWidgetHostView();
++                if (!rwhv || !rwhv->GetRenderWidgetHost()) {
++                  send_resp(false, "SUMERU_TARGET_NOT_READY",
++                            "no render widget host view", "");
++                  return;
++                }
++                auto* widget_host = rwhv->GetRenderWidgetHost();
++                blink::WebMouseEvent event;
++                if (mouse_type == "mousePressed") {
++                  event.SetType(blink::WebInputEvent::Type::kMouseDown);
++                } else if (mouse_type == "mouseReleased") {
++                  event.SetType(blink::WebInputEvent::Type::kMouseUp);
++                } else {
++                  event.SetType(blink::WebInputEvent::Type::kMouseMove);
++                }
++                event.SetPositionInWidget(gfx::PointF(mx, my));
++                event.SetPositionInScreen(gfx::PointF(mx, my));
++                event.click_count = clicks;
++                if (button == "right") {
++                  event.button = blink::WebMouseEvent::Button::kRight;
++                } else if (button == "middle") {
++                  event.button = blink::WebMouseEvent::Button::kMiddle;
++                } else {
++                  event.button = blink::WebMouseEvent::Button::kLeft;
++                }
++                widget_host->ForwardMouseEvent(event);
++                send_resp(true, "", "", mouse_type);
++              },
++              this, req_id, tid, mouse_type, mx, my, button, clicks, dx, dy));
++}
++
++
++void SumeruGateway::HandleSnapshotAX(const base::DictValue& params,
++                                      double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  if (!target_id || target_id->empty()) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "GW_INVALID_ARGUMENT");
++    e.Set("message", "targetId required");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  const std::string tid = *target_id;
++  const bool with_locator = params.FindBool("includeStableLocator").value_or(true);
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, double req_id, const std::string& t_id,
++                 bool with_locator) {
++                auto send_resp = [&](bool ok, const std::string& code,
++                                     const std::string& message,
++                                     const std::string& content) {
++                  base::DictValue resp;
++                  resp.Set("type", "response");
++                  resp.Set("id", req_id);
++                  resp.Set("ok", ok);
++                  if (ok) {
++                    base::DictValue r;
++                    r.Set("content", content);
++                    resp.Set("result", std::move(r));
++                  } else {
++                    base::DictValue e;
++                    e.Set("code", code);
++                    e.Set("message", message);
++                    resp.Set("error", std::move(e));
++                  }
++                  content::BrowserThread::GetTaskRunnerForThread(
++                      content::BrowserThread::IO)
++                      ->PostTask(FROM_HERE,
++                                 base::BindOnce(
++                                     [](SumeruGateway* self,
++                                        base::Value msg) {
++                                       self->Send(std::move(msg));
++                                     },
++                                     self, base::Value(std::move(resp))));
++                };
++                // K3 gap #5: the AX-tree snapshot via
++                // RequestAXTreeSnapshot + SnapshotSerializer (the
++                // ControllerImpl::Snapshot pattern, target-resolved).
++                content::WebContents* matched = ResolveTargetContents(t_id);
++                if (!matched || !matched->GetPrimaryMainFrame()) {
++                  send_resp(false, "SUMERU_TASK_SPACE_NOT_FOUND",
++                            "no target: " + t_id, "");
++                  return;
++                }
++                auto* rfh_impl = static_cast<content::RenderFrameHostImpl*>(
++                    matched->GetPrimaryMainFrame());
++                content::sumeru::SnapshotSerializer::Options opts;
++                opts.include_stable_locator = with_locator;
++                const std::string doc_url =
++                    rfh_impl->GetLastCommittedURL().spec();
++                auto ax_params =
++                    ::content::mojom::SnapshotAccessibilityTreeParams::New();
++                rfh_impl->RequestAXTreeSnapshot(
++                    base::BindOnce(
++                        [](SumeruGateway* self, double req_id,
++                           content::sumeru::SnapshotSerializer::Options opts,
++                           std::string doc_url,
++                           ui::AXTreeUpdate& update) {
++                          auto tree = std::make_unique<ui::AXTree>();
++                          tree->Unserialize(update);
++                          auto serialized =
++                              content::sumeru::SnapshotSerializer::Serialize(
++                                  *tree, opts);
++                          base::DictValue r;
++                          r.Set("content", serialized.content);
++                          base::ListValue refs;
++                          for (const auto& ref : serialized.refs) {
++                            base::DictValue rd;
++                            rd.Set("role", ref.role);
++                            rd.Set("name", ref.name);
++                            rd.Set("url", doc_url);
++                            if (!ref.loc.empty()) {
++                              rd.Set("loc", ref.loc);
++                            }
++                            refs.Append(base::Value(std::move(rd)));
++                          }
++                          r.Set("refs", std::move(refs));
++                          base::DictValue resp;
++                          resp.Set("type", "response");
++                          resp.Set("id", req_id);
++                          resp.Set("ok", true);
++                          resp.Set("result", std::move(r));
++                          content::BrowserThread::GetTaskRunnerForThread(
++                              content::BrowserThread::IO)
++                              ->PostTask(
++                                  FROM_HERE,
++                                  base::BindOnce(
++                                      [](SumeruGateway* self,
++                                         base::Value msg) {
++                                        self->Send(std::move(msg));
++                                      },
++                                      self,
++                                      base::Value(std::move(resp))));
++                        },
++                        self, req_id, opts, doc_url),
++                    std::move(ax_params));
++              },
++              this, req_id, tid, with_locator));
++}
++
++
++void SumeruGateway::HandleEvaluate(const base::DictValue& params,
++                                    double req_id) {
++  const std::string* target_id = params.FindString("targetId");
++  const std::string* expression = params.FindString("expression");
++  auto fail = [&](const std::string& code, const std::string& message) {
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", code);
++    e.Set("message", message);
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++  };
++  if (!target_id || target_id->empty() || !expression) {
++    fail("GW_INVALID_ARGUMENT", "targetId and expression required");
++    return;
++  }
++  const std::string tid = *target_id;
++  const std::string expr = *expression;
++  int eid = eval_next_id_++;
++  eval_pending_[eid] = {eid, req_id, tid};
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](SumeruGateway* self, int e_id, const std::string& t_id,
++                 const std::string& code_expr) {
++                // RFH::ExecuteJavaScript CHECKs
++                // CanExecuteJavaScript() — true only for WebUI/devtools/
++                // about:blank — and FATAL-crashed the whole browser on http
++                // pages (probe evidence, twice). The DevTools-agent path is
++                // the legal evaluate route for arbitrary pages; the cached
++                // attach is stable at diagnostic volume.
++                if (!self->eval_agent_ ||
++                    self->eval_agent_->GetId() != t_id) {
++                  if (self->eval_agent_) {
++                    self->eval_agent_->DetachClient(self);
++                  }
++                  self->eval_agent_ =
++                      content::DevToolsAgentHost::GetForId(t_id);
++                  if (!self->eval_agent_) {
++                    // Gateway: real tabs may only be reachable through
++                    // the embedder delegate.
++                    if (content::WebContents* eval_contents =
++                            ResolveTargetContents(t_id)) {
++                      self->eval_agent_ =
++                          content::DevToolsAgentHost::GetOrCreateFor(
++                              eval_contents);
++                    }
++                  }
++                  if (!self->eval_agent_) {
++                    self->FailPendingEval(
++                        e_id, "SUMERU_TASK_SPACE_NOT_FOUND",
++                        "no target: " + t_id);
++                    return;
++                  }
++                  if (!self->eval_agent_->AttachClient(self)) {
++                    self->eval_agent_ = nullptr;
++                    self->FailPendingEval(
++                        e_id, "SUMERU_OPERATION_FAILED", "attach failed");
++                    return;
++                  }
++                }
++                // fix (2026-11-19): no-session dispatch — see
++                // HandleNavigate comment. AttachClient on the page-level host
++                // is the whole session; empty-sessionId routes to the main
++                // (renderer) session directly.
++                base::DictValue call;
++                call.Set("id", e_id);
++                call.Set("method", "Runtime.evaluate");
++                base::DictValue cparams;
++                cparams.Set("expression", code_expr);
++                cparams.Set("returnByValue", true);
++                cparams.Set("awaitPromise", false);
++                call.Set("params", std::move(cparams));
++                std::string line;
++                base::JSONWriter::Write(base::Value(std::move(call)), &line);
++                self->eval_agent_->DispatchProtocolMessage(
++                    self, base::as_byte_span(line));
++              },
++              this, eid, tid, expr));
++}
++
++
++void SumeruGateway::DispatchProtocolMessage(
++    content::DevToolsAgentHost* agent_host,
++    base::span<const uint8_t> message) {
++ // Agent replies arrive on the UI thread; hop to IO where the pending map
++ // and socket live.
++  std::string text(message.begin(), message.end());
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(
++          FROM_HERE,
++          base::BindOnce(
++              [](base::WeakPtr<SumeruGateway> self, std::string msg) {
++                if (self) {
++                  self->HandleAgentReply(msg);
++                }
++              },
++              weak_factory_.GetWeakPtr(), std::move(text)));
++}
++
++void SumeruGateway::HandleAgentReply(const std::string& text) {
++ // Parse the CDP reply, match our tracked id, resolve the pending request.
++  auto parsed = base::JSONReader::Read(text, /*options=*/0);
++  if (!parsed || !parsed->is_dict()) {
++    return;
++  }
++  const base::DictValue& msg = parsed->GetDict();
++ // fix (2026-11-19): no child-session capture — commands dispatch with
++ // an empty sessionId to the main session; replies resolve by tracked id.
++ //
++ // navigate fix: Page.loadEventFired is the completion signal for navigateTarget.
++  if (const std::string* ev_method = msg.FindString("method")) {
++    if (*ev_method == "Page.loadEventFired") {
++      ResolveCommittedNavs();
++    }
++    return;
++  }
++  std::optional<double> idv = msg.FindDouble("id");
++  if (!idv) {
++    return;  // Other events: gateway event-stream territory, not needed for eval.
++  }
++  int eid = static_cast<int>(*idv);
++  auto it = eval_pending_.find(eid);
++  if (it == eval_pending_.end()) {
++    return;
++  }
++ // navigate fix: the navigate command answered — error fails now, success waits
++ // for the load event so a following evaluate sees the NEW document.
++  if (nav_awaiting_commit_.erase(eid)) {
++    bool failed = false;
++    std::string emsg = "navigate failed";
++    if (const base::Value* ev = msg.Find("error")) {
++      failed = true;
++      if (ev->is_dict()) {
++        if (const std::string* m = ev->GetDict().FindString("message")) {
++          emsg = *m;
++        }
++      }
++    }
++    if (failed) {
++      double nreq = it->second.req_id;
++      eval_pending_.erase(it);
++      nav_awaiting_load_.erase(eid);
++      base::DictValue resp;
++      resp.Set("type", "response");
++      resp.Set("id", nreq);
++      resp.Set("ok", false);
++      base::DictValue e;
++      e.Set("code", "GW_NAVIGATE_ERROR");
++      e.Set("message", emsg);
++      resp.Set("error", std::move(e));
++      Send(base::Value(std::move(resp)));
++      return;
++    }
++    nav_awaiting_load_.insert(eid);
++    return;  // Response deferred to Page.loadEventFired.
++  }
++  double req_id = it->second.req_id;
++  eval_pending_.erase(it);
++
++  base::DictValue resp;
++  resp.Set("type", "response");
++  resp.Set("id", req_id);
++  const base::Value* result = nullptr;
++  const base::Value* error = nullptr;
++  if (parsed->is_dict()) {
++    if (const base::Value* rv = parsed->GetDict().Find("result")) {
++      result = rv;
++    }
++    if (const base::Value* ev = parsed->GetDict().Find("error")) {
++      error = ev;
++    }
++  }
++  if (error) {
++    resp.Set("ok", false);
++    base::DictValue e;
++    std::string emsg = "eval error";
++    if (error->is_dict()) {
++      if (const std::string* m = error->GetDict().FindString("message")) {
++        emsg = *m;
++      }
++    }
++    e.Set("code", "GW_EVAL_ERROR");
++    e.Set("message", emsg);
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++ // result.result.value (returnByValue) or exceptionDetails.
++  const base::Value* inner = nullptr;
++  const base::Value* exc = nullptr;
++  if (result && result->is_dict()) {
++    if (const base::Value* iv = result->GetDict().Find("result")) {
++      inner = iv;
++    }
++    if (const base::Value* xv = result->GetDict().Find("exceptionDetails")) {
++      exc = xv;
++    }
++  }
++  if (exc) {
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "SUMERU_OPERATION_FAILED");
++    e.Set("message", "eval exception");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++    return;
++  }
++  resp.Set("ok", true);
++ // Unwrap the CDP RemoteObject: {"type":"string","value":...}. By-value
++ // results carry the JS value under "value"; fall back to the object itself
++ // for non-value returns.
++  base::Value value;
++  if (inner && inner->is_dict()) {
++    if (const base::Value* v = inner->GetDict().Find("value")) {
++      value = v->Clone();
++    } else {
++      value = inner->Clone();
++    }
++  } else if (inner) {
++    value = inner->Clone();
++  }
++  base::DictValue r;
++  r.Set("value", std::move(value));
++  resp.Set("result", std::move(r));
++  Send(base::Value(std::move(resp)));
++}
++
++void SumeruGateway::ResolveCommittedNavs() {
++ // IO thread: Page.loadEventFired arrived — the new document is usable.
++  for (auto sit = nav_awaiting_load_.begin();
++       sit != nav_awaiting_load_.end();) {
++    int eid = *sit;
++    auto it = eval_pending_.find(eid);
++    if (it == eval_pending_.end()) {
++      sit = nav_awaiting_load_.erase(sit);
++      continue;
++    }
++    double req_id = it->second.req_id;
++    eval_pending_.erase(it);
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", req_id);
++    resp.Set("ok", true);
++    base::DictValue r;
++    r.Set("navigated", true);
++    resp.Set("result", std::move(r));
++    Send(base::Value(std::move(resp)));
++    sit = nav_awaiting_load_.erase(sit);
++  }
++}
++
++void SumeruGateway::FailAllPending() {
++ // IO-thread only: eval_pending_ and the socket live here. The old
++ // AgentHostClosed() wrote the socket from the UI thread, which trips
++ // SocketPosix's thread checker and aborts the browser when a tab with an
++ // in-flight evaluate is closed (socket-thread fix).
++  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
++  for (auto& entry : eval_pending_) {
++    const PendingEval& pe = entry.second;
++    base::DictValue resp;
++    resp.Set("type", "response");
++    resp.Set("id", pe.req_id);
++    resp.Set("ok", false);
++    base::DictValue e;
++    e.Set("code", "SUMERU_OPERATION_FAILED");
++    e.Set("message", "agent host closed");
++    resp.Set("error", std::move(e));
++    Send(base::Value(std::move(resp)));
++  }
++  eval_pending_.clear();
++  nav_awaiting_commit_.clear();
++  nav_awaiting_load_.clear();
++}
++
++void SumeruGateway::AgentHostClosed(content::DevToolsAgentHost* agent_host) {
++  if (eval_agent_ && eval_agent_.get() != agent_host) {
++    return;  // A different host; ignore.
++  }
++ // UI thread: only clear the agent pointer. Pending-map cleanup and socket
++ // writes are IO-thread work (see FailAllPending above).
++  eval_agent_ = nullptr;
++  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::IO)
++      ->PostTask(FROM_HERE,
++                 base::BindOnce(&SumeruGateway::FailAllPending,
++                                weak_factory_.GetWeakPtr()));
++}
++
++
++void SumeruGateway::CloseConnection() {
++  if (client_) {
++    client_->Disconnect();
++    client_.reset();
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&SumeruGateway::DoAcceptLoop,
++                                weak_factory_.GetWeakPtr()));
++}
++
++}  // namespace content::sumeru
++
++
++
++
++
++
+diff --git a/sumeru/browser/gateway/sumeru_gateway.h b/sumeru/browser/gateway/sumeru_gateway.h
+new file mode 100644
+index 0000000..7903552
+--- /dev/null
++++ b/sumeru/browser/gateway/sumeru_gateway.h
+@@ -0,0 +1,113 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_H_
++#define SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_H_
++
++#include <memory>
++#include <string>
++
++#include <deque>
++#include <map>
++#include <set>
++#include <utility>
++
++#include "base/memory/weak_ptr.h"
++#include "base/values.h"
++#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/devtools_agent_host_client.h"
++#include "net/base/io_buffer.h"
++#include "net/socket/stream_socket.h"
++#include "net/socket/unix_domain_server_socket_posix.h"
++
++namespace content::sumeru {
++
++// K-Gateway (gateway): the browser process's single external control
++// channel ? a private UDS serving a versioned JSON-line protocol (host-IPC
++// v2 shape). Wire protocol and gateway methods: see sumeru_gateway.cc.
++class SumeruGateway : public content::DevToolsAgentHostClient {
++ public:
++  static void Start();
++
++ private:
++  friend void StartGateway(content::BrowserContext* browser_context);
++  SumeruGateway();
++  ~SumeruGateway() override;
++  SumeruGateway(const SumeruGateway&) = delete;
++  SumeruGateway& operator=(const SumeruGateway&) = delete;
++
++  void DoAcceptLoop();
++  void OnAccepted(int rv);
++  void StartRead();
++  void OnRead(int rv);
++  void HandleLine(const std::string& line);
++  void HandleHello(const base::Value& msg);
++  void HandleRequest(const base::Value& msg);
++  void Send(const base::Value& msg);
++  void BroadcastEvent(const std::string& event,
++                       base::DictValue payload);
++  void CloseConnection();
++
++  std::unique_ptr<net::UnixDomainServerSocket> server_;
++  std::unique_ptr<net::StreamSocket> client_;
++  std::unique_ptr<net::StreamSocket> pending_client_;
++  std::string token_;
++  std::string server_session_;
++  std::string read_buffer_;
++  scoped_refptr<net::IOBufferWithSize> read_io_buffer_;
++  bool authenticated_ = false;
++  bool subscribed_ = false;
++  int last_seq_sent_ = 0;
++  int revision() const { return revision_; }
++  int revision_ = 0;
++
++ public:
++  void set_browser_context(content::BrowserContext* ctx) {
++    browser_context_ = ctx;
++  }
++
++ private:
++  raw_ptr<content::BrowserContext> browser_context_ = nullptr;
++
++ // evaluate: DevTools-agent-backed evaluation (browser-internal path —
++ // no external CDP pipe; stealth-clean since no domain enablement on the page
++ // beyond the evaluate itself).
++  void HandleImeCompose(const base::DictValue& params, double req_id);
++  void HandleDispatchKey(const base::DictValue& params, double req_id);
++  void HandleDispatchMouse(const base::DictValue& params, double req_id);
++  void HandleSnapshotAX(const base::DictValue& params, double req_id);
++  void HandleEvaluate(const base::DictValue& params, double req_id);
++  void HandleNavigate(const base::DictValue& params, double req_id);
++ // F22 helpers: state methods run on the UI thread and post their
++ // response/event back to the IO thread (where the socket lives).
++  void PostFailure(int sid_v, int req_id, const std::string& code,
++                   const std::string& message);
++  void PostResultAndEvent(int sid_v, int req_id, const std::string& event,
++                          base::DictValue event_payload);
++  void FailPendingEval(int eid, const std::string& code,
++                       const std::string& message);
++  void FailAllPending();
++  void HandleAgentReply(const std::string& text);
++  void ResolveCommittedNavs();
++  void DispatchProtocolMessage(content::DevToolsAgentHost* agent_host,
++                               base::span<const uint8_t> message) override;
++  void AgentHostClosed(content::DevToolsAgentHost* agent_host) override;
++  scoped_refptr<content::DevToolsAgentHost> eval_agent_;
++  int eval_next_id_ = 1;
++  struct PendingEval {
++    int id;
++    double req_id;
++    std::string target_id;
++  };
++  std::map<int, PendingEval> eval_pending_;
++ // navigate fix: navigate completion bookkeeping.
++  std::set<int> nav_awaiting_commit_;
++  std::set<int> nav_awaiting_load_;
++  std::string eval_frame_key_;
++  base::WeakPtrFactory<SumeruGateway> weak_factory_{this};
++};
++
++}  // namespace content::sumeru
++
++#endif  // SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_H_
+diff --git a/sumeru/browser/gateway/sumeru_gateway_start.h b/sumeru/browser/gateway/sumeru_gateway_start.h
+new file mode 100644
+index 0000000..4141353
+--- /dev/null
++++ b/sumeru/browser/gateway/sumeru_gateway_start.h
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_START_H_
++#define SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_START_H_
++
++namespace content {
++class BrowserContext;
++}
++
++namespace content::sumeru {
++
++// Starts the K-Gateway control channel (env-gated, idempotent).
++// Declared in a dependency-free header so browser_main_loop can call it
++// without pulling base::Value/net types across a clang module boundary.
++
++void StartGateway(content::BrowserContext* browser_context);
++
++}  // namespace content::sumeru
++
++#endif  // SUMERU_BROWSER_GATEWAY_SUMERU_GATEWAY_START_H_
+diff --git a/sumeru/browser/snapshot/snapshot_serializer.cc b/sumeru/browser/snapshot/snapshot_serializer.cc
+new file mode 100644
+index 0000000..429bb30
+--- /dev/null
++++ b/sumeru/browser/snapshot/snapshot_serializer.cc
+@@ -0,0 +1,239 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "sumeru/browser/snapshot/snapshot_serializer.h"
++
++#include <functional>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/containers/flat_map.h"
++#include "base/containers/flat_set.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/strings/stringprintf.h"
++#include "base/strings/utf_string_conversions.h"
++#include "ui/accessibility/ax_enum_util.h"
++#include "ui/accessibility/ax_enums.mojom-shared.h"
++#include "ui/accessibility/ax_node.h"
++#include "ui/accessibility/ax_tree.h"
++
++namespace content::sumeru {
++
++namespace {
++
++// Role identity is taken from `ax::mojom::ToString(role)` (lowercased) rather
++// than the C++ enumerator: sumeru's vocabulary tracks Chromium role renames
++// (e.g. ComboBox -> ComboBoxSelect) and the string form is stable across them.
++std::string RawRole(ax::mojom::Role role) {
++  return base::ToLowerASCII(std::string_view(ui::ToString(role)));
++}
++
++// Dropped entirely: InlineTextBox text already appears via its StaticText.
++bool ShouldSkipRole(ax::mojom::Role role) {
++  return RawRole(role) == "inlinetextbox";
++}
++
++// Unnamed wrappers are hoisted (children render at the wrapper's depth).
++bool IsBareContainerRole(ax::mojom::Role role) {
++  const std::string raw = RawRole(role);
++  return raw == "genericcontainer" || raw == "none" || raw == "ignored" ||
++         raw == "unknown";
++}
++
++// Roles that receive a ref (interactive or locatable). Mirrors the shim's
++// REF_ROLES table so both implementations stay aligned.
++bool ShouldAssignRef(ax::mojom::Role role) {
++ // sumeru: 用 constexpr std::array<std::string_view> 而不是
++ // static const base::flat_set<std::string> —— 后者带 exit-time destructor，
++ // 在本项目的 -Werror,-Wexit-time-destructors 下无法编译。
++  static constexpr std::string_view kRefRoles[] = {
++      "button",       "link",          "checkbox",   "radiobutton",
++      "textfield",    "searchbox",     "combobox",   "comboboxselect",
++      "listbox",      "listboxoption", "slider",     "spinbutton",
++      "switch",       "menuitem",      "menuitemcheckbox", "menuitemradio",
++      "tab",          "treeitem",      "iframe",
++  };
++  const std::string raw = RawRole(role);
++  for (std::string_view candidate : kRefRoles) {
++    if (candidate == raw) {
++      return true;
++    }
++  }
++  return false;
++}
++
++// Kernel-side role spelling (sumeru vocabulary).
++std::string RoleName(ax::mojom::Role role) {
++  const std::string raw = RawRole(role);
++ // 同上：constexpr 数组避免 exit-time destructor。
++  struct Alias {
++    std::string_view raw;
++    std::string_view name;
++  };
++  static constexpr Alias kAliases[] = {
++      {"rootwebarea", "root"},        {"statictext", "text"},
++      {"link", "anchor"},             {"inlinetextbox", "text"},
++      {"textfield", "textbox"},       {"comboboxselect", "combobox"},
++      {"radiobutton", "radio"},       {"unorderedlist", "unordered_list"},
++      {"orderedlist", "ordered_list"},{"listitem", "list_item"},
++      {"tablerow", "table_row"},      {"cell", "table_cell"},
++  };
++  for (const Alias& alias : kAliases) {
++    if (alias.raw == raw) {
++      return std::string(alias.name);
++    }
++  }
++  return raw;
++}
++
++// `text` rows are the only ones carrying a quoted name.
++std::string RowLabel(ax::mojom::Role role,
++                     const std::u16string& name,
++                     const std::string& role_name) {
++  if (RawRole(role) != "statictext" || name.empty()) {
++    return role_name;
++  }
++  std::string escaped = base::UTF16ToUTF8(name);
++  base::ReplaceChars(escaped, "\\", "\\\\", &escaped);
++  base::ReplaceChars(escaped, "\"", "\\\"", &escaped);
++  base::ReplaceChars(escaped, "\n", "\\n", &escaped);
++  base::ReplaceChars(escaped, "\t", "\\t", &escaped);
++  return base::StringPrintf("%s \"%s\"", role_name.c_str(), escaped.c_str());
++}
++
++// `css:<tag>[name="…"]` (name > id), mirroring the shim's cssLocatorFor().
++std::string BuildCssLocator(const ui::AXNode& node) {
++  const std::string html_tag =
++      node.data().GetStringAttribute(ax::mojom::StringAttribute::kHtmlTag);
++  if (html_tag.empty()) {
++    return std::string();
++  }
++  const std::string name =
++      node.data().GetStringAttribute(ax::mojom::StringAttribute::kName);
++  if (!name.empty()) {
++    return base::StringPrintf("css:%s[name=\"%s\"]", html_tag.c_str(),
++                              name.c_str());
++  }
++  const std::string html_id =
++      node.data().GetStringAttribute(ax::mojom::StringAttribute::kHtmlId);
++  if (!html_id.empty()) {
++    return base::StringPrintf("css:#%s", html_id.c_str());
++  }
++  return std::string();
++}
++
++// `href:` locator only when the URL is absolute (relative links get no loc).
++std::string BuildHrefLocator(const ui::AXNode& node) {
++  const std::string url =
++      node.data().GetStringAttribute(ax::mojom::StringAttribute::kUrl);
++  if (url.empty() || url.find("://") == std::string::npos) {
++    return std::string();
++  }
++  return "href:" + url;
++}
++
++}  // namespace
++
++// static
++SnapshotSerializer::Result SnapshotSerializer::Serialize(
++    const ui::AXTree& tree,
++    const Options& options) {
++  Result result;
++  int32_t next_ref = 1;
++
++  const ui::AXNode* root =
++      options.root_id == ui::kInvalidAXNodeID ? tree.root()
++                                              : tree.GetFromId(options.root_id);
++  if (!root) {
++    result.content = "root";
++    return result;
++  }
++
++ // `depth` is the visual depth (bare wrappers do not consume a level).
++  std::function<void(const ui::AXNode&, int)> render =
++      [&](const ui::AXNode& node, int depth) {
++        const ax::mojom::Role role = node.data().role;
++        LOG(ERROR) << "[SUMERU-RENDER] role=" << RawRole(role)
++                   << " skip=" << ShouldSkipRole(role)
++                   << " children=" << node.children().size();
++        if (ShouldSkipRole(role)) {
++          return;
++        }
++
++        const std::u16string name =
++            node.data().GetString16Attribute(ax::mojom::StringAttribute::kName);
++        const bool bare = IsBareContainerRole(role) && name.empty();
++        if (bare) {
++          for (const ui::AXNode* child : node.children()) {
++            if (child) {
++              render(*child, depth);
++            }
++          }
++          return;
++        }
++
++        const std::string role_name = RoleName(role);
++        std::string line(static_cast<size_t>(depth) * 2, ' ');
++        line.append(RowLabel(role, name, role_name));
++
++        if (ShouldAssignRef(role)) {
++          const int32_t ref_id = next_ref++;
++          std::string suffix;
++          std::string loc;
++          if (options.include_stable_locator) {
++            loc = BuildHrefLocator(node);
++            if (loc.empty()) {
++              loc = BuildCssLocator(node);
++            }
++            if (!loc.empty()) {
++              suffix.append(", loc=").append(loc);
++            }
++          }
++          NodeRef ref;
++          ref.ref_id = ref_id;
++          // Kernel ref triple is (frame_id, backend_node_id, document_id); the
++          // AX node id is the in-tree identity, callers fill frame/document.
++          ref.backend_node_id = static_cast<int32_t>(node.data().id);
++          ref.role = role_name;
++          ref.name = base::UTF16ToUTF8(name);
++          ref.loc = loc;
++          // `unstable` marks a ref whose locator may stop resolving without the
++          // document changing identity — in the kernel it comes from Blink's
++          // dirty/layout state for the backing node.
++          //
++          // Nothing on this layer can answer that today: ui::AXNodeData exposes
++          // IsIgnored()/IsInvisibleOrIgnored() (platform visibility) and
++          // GetRestriction() (readOnly/disabled), neither of which means
++          // "locator may drift". Wiring it properly needs a Blink-side dirty
++          // bit plumbed through the accessibility tree, so the field stays
++          // false rather than guessing a semantic.
++          ref.unstable = false;
++          result.refs.push_back(std::move(ref));
++
++          line.append(" [ref=").append(base::NumberToString(ref_id));
++          line.append(suffix);
++          line.append("]");
++        }
++
++        result.content.append(line).append("\n");
++
++        for (const ui::AXNode* child : node.children()) {
++          if (child) {
++            render(*child, depth + 1);
++          }
++        }
++      };
++
++  render(*root, 0);
++
++  while (!result.content.empty() && result.content.back() == '\n') {
++    result.content.pop_back();
++  }
++  return result;
++}
++
++}  // namespace content::sumeru
+diff --git a/sumeru/browser/snapshot/snapshot_serializer.h b/sumeru/browser/snapshot/snapshot_serializer.h
+new file mode 100644
+index 0000000..3e91eb7
+--- /dev/null
++++ b/sumeru/browser/snapshot/snapshot_serializer.h
+@@ -0,0 +1,81 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_SUMERU_SNAPSHOT_SERIALIZER_H_
++#define CONTENT_BROWSER_SUMERU_SNAPSHOT_SERIALIZER_H_
++
++#include <string>
++#include <vector>
++
++#include "base/types/optional_ref.h"
++#include <cstdint>
++#include "ui/accessibility/ax_node_id_forward.h"
++
++namespace ui {
++class AXNode;
++class AXTree;
++}  // namespace ui
++
++namespace content::sumeru {
++
++// Native snapshot serializer: walks the accessibility tree in-process and
++// renders the kernel-shaped text snapshot plus the ref table.
++//
++// Behaviour is pinned to the expected snapshot format (see
++// local snapshot fixtures.
++// sumeru-shim/chromium/evidence/):
++//
++// root
++// heading
++// text "Hello"
++// textbox [ref=1, loc=css:input[name="q"]]
++// anchor [ref=2, loc=href:https://example.com/a, url=https://example.com/a]
++// text "Ex"
++// iframe [ref=3]
++// root
++// button [ref=4]
++// text "Inner"
++//
++// Rules enforced here:
++// * `root` never gets a ref; only interactive/locatable roles do;
++// * only `text` rows carry a quoted name;
++// * unnamed wrappers (generic/none/container) are hoisted away;
++// * InlineTextBox is dropped (its text already appears via StaticText);
++// * loc is `css:<selector>` or `href:<original href>`; url is absolute;
++// * nodes flagged unstable omit their loc.
++// Stable reference to a node (mirrors the kernel contract).
++struct NodeRef {
++  int32_t ref_id = 0;
++  int32_t backend_node_id = 0;
++  std::string frame_id;
++  std::string document_id;
++  std::string role;
++  std::string name;
++  std::string loc;
++  std::string url;
++  bool unstable = false;
++};
++
++class SnapshotSerializer {
++ public:
++  struct Options {
++    // Only serialize the subtree rooted at this node (kSubtree scope).
++    ui::AXNodeID root_id = ui::kInvalidAXNodeID;
++    bool include_stable_locator = true;
++  };
++
++  struct Result {
++    std::string content;
++    std::vector<NodeRef> refs;
++  };
++
++  SnapshotSerializer() = delete;
++
++ // Serializes `tree` starting at `options.root_id` (or the tree root).
++  static Result Serialize(const ui::AXTree& tree, const Options& options);
++};
++
++}  // namespace content::sumeru
++
++#endif  // CONTENT_BROWSER_SUMERU_SNAPSHOT_SERIALIZER_H_
+diff --git a/sumeru/browser/tabs/tab_ops.cc b/sumeru/browser/tabs/tab_ops.cc
+new file mode 100644
+index 0000000..ae4c297
+--- /dev/null
++++ b/sumeru/browser/tabs/tab_ops.cc
+@@ -0,0 +1,39 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "sumeru/browser/tabs/tab_ops.h"
++
++#include <cstdlib>
++#include <string>
++
++#include "base/no_destructor.h"
++
++namespace content::sumeru {
++
++namespace {
++
++TabOpsDelegate** DelegateSlot() {
++  static TabOpsDelegate* delegate = nullptr;
++  return &delegate;
++}
++
++}  // namespace
++
++void SetTabOpsDelegate(TabOpsDelegate* delegate) {
++  *DelegateSlot() = delegate;
++}
++
++TabOpsDelegate* GetTabOpsDelegate() {
++  return *DelegateSlot();
++}
++
++bool IsKeepLastTabEnabled() {
++  static const bool enabled = [] {
++    const char* value = std::getenv("SUMERU_KEEP_LAST_TAB");
++    return value == nullptr || std::string(value) != "0";
++  }();
++  return enabled;
++}
++
++}  // namespace content::sumeru
+diff --git a/sumeru/browser/tabs/tab_ops.h b/sumeru/browser/tabs/tab_ops.h
+new file mode 100644
+index 0000000..985035f
+--- /dev/null
++++ b/sumeru/browser/tabs/tab_ops.h
+@@ -0,0 +1,59 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SUMERU_BROWSER_TABS_TAB_OPS_H_
++#define SUMERU_BROWSER_TABS_TAB_OPS_H_
++
++#include <string>
++#include <vector>
++
++#include "url/gurl.h"
++
++namespace content {
++class WebContents;
++}
++
++namespace content::sumeru {
++
++struct TabSnapshot {
++  std::string target_id;
++  std::string url;
++  std::string title;
++  bool active = false;
++};
++
++// Gateway: agent tab operations are browser-domain (TabStripModel), not a
++// private registry. content/ cannot reach the chrome embedder, so the embedder
++// installs this delegate during startup. When no delegate is installed the
++// gateway falls back to TabRegistry (content-only builds and tests).
++//
++// All methods must be called on the UI thread.
++class TabOpsDelegate {
++ public:
++  virtual ~TabOpsDelegate() = default;
++
++ // Creates a tab and returns its DevTools target id ("" on failure).
++  virtual std::string CreateTab(const GURL& url) = 0;
++  virtual bool CloseTab(const std::string& target_id) = 0;
++  virtual bool ActivateTab(const std::string& target_id) = 0;
++  virtual std::vector<TabSnapshot> ListTabs() = 0;
++ // Target id of the active tab ("" when unknown).
++  virtual std::string GetActiveTargetId() = 0;
++ // Number of tabs currently in the strip (0 when unknown).
++  virtual int TabCount() = 0;
++  virtual WebContents* GetWebContents(const std::string& target_id) = 0;
++};
++
++// UI thread only. Does not take ownership; the embedder keeps the delegate
++// alive for the process lifetime.
++void SetTabOpsDelegate(TabOpsDelegate* delegate);
++TabOpsDelegate* GetTabOpsDelegate();
++
++// The product keeps at least one tab open so the browser cannot exit because
++// its last tab was closed. Enabled unless SUMERU_KEEP_LAST_TAB=0.
++bool IsKeepLastTabEnabled();
++
++}  // namespace content::sumeru
++
++#endif  // SUMERU_BROWSER_TABS_TAB_OPS_H_
+diff --git a/sumeru/browser/tabs/tab_registry.cc b/sumeru/browser/tabs/tab_registry.cc
+new file mode 100644
+index 0000000..36415b7
+--- /dev/null
++++ b/sumeru/browser/tabs/tab_registry.cc
+@@ -0,0 +1,115 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "sumeru/browser/tabs/tab_registry.h"
++
++#include <map>
++#include <utility>
++
++#include "base/no_destructor.h"
++#include "base/strings/utf_string_conversions.h"
++#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/web_contents.h"
++
++namespace content::sumeru {
++
++namespace {
++
++struct Slot {
++  std::unique_ptr<content::WebContents> contents;
++  std::string target_id;
++  bool active = false;
++};
++
++// 进程内单例。用 base::NoDestructor 避免 exit-time destructor
++// （本项目 -Werror,-Wexit-time-destructors）。
++using Registry = std::map<std::string, Slot>;
++
++Registry& GetRegistry() {
++  static base::NoDestructor<Registry> registry;
++  return *registry;
++}
++
++// DevTools agent host id 与 CDP 用的是同一套字符串（`<type>:<uuid>`），
++// 这样 createTab() 的返回值能和 harness 已经期待的 target id 互通。
++std::string TargetIdFor(content::WebContents* contents) {
++  if (!contents) {
++    return std::string();
++  }
++  auto agent_host = content::DevToolsAgentHost::GetOrCreateFor(contents);
++  return agent_host ? agent_host->GetId() : std::string();
++}
++
++}  // namespace
++
++std::string TabRegistry::Register(
++    std::unique_ptr<content::WebContents> contents) {
++  if (!contents) {
++    return std::string();
++  }
++  const std::string target_id = TargetIdFor(contents.get());
++  if (target_id.empty()) {
++    return std::string();
++  }
++  Slot slot;
++  slot.target_id = target_id;
++  slot.contents = std::move(contents);
++  GetRegistry()[target_id] = std::move(slot);
++  return target_id;
++}
++
++std::vector<TabRegistry::Entry> TabRegistry::List() {
++  std::vector<Entry> entries;
++ // active 语义：本注册表里最后一个被 SetActive 的；默认第一个。
++  bool any_active = false;
++  for (const auto& [id, slot] : GetRegistry()) {
++    if (slot.active) {
++      any_active = true;
++      break;
++    }
++  }
++  bool first = true;
++  for (const auto& [id, slot] : GetRegistry()) {
++    Entry entry;
++    entry.target_id = id;
++    if (slot.contents) {
++      entry.url = slot.contents->GetLastCommittedURL().spec();
++      // sumeru 的 TabInfo 返回页面标题（title），不是 url。
++      entry.title = base::UTF16ToUTF8(slot.contents->GetTitle());
++    }
++    // 本注册表只登记经 sumeru NodeClient（agent）创建的 tab，
++    // 所以 opened_by 恒为 "agent"。
++    entry.opened_by = "agent";
++    // label 由 SDK 层分配（p1、p2…），内核侧为空。
++    entry.label = std::string();
++    if (any_active) {
++      entry.active = slot.active;
++    } else {
++      entry.active = first;
++    }
++    first = false;
++    entries.push_back(std::move(entry));
++  }
++  return entries;
++}
++
++bool TabRegistry::Close(const std::string& target_id) {
++  auto it = GetRegistry().find(target_id);
++  if (it == GetRegistry().end()) {
++    return false;
++  }
++  if (it->second.contents) {
++    it->second.contents->Close();
++  }
++  GetRegistry().erase(it);
++  return true;
++}
++
++void TabRegistry::SetActive(const std::string& target_id) {
++  for (auto& [id, slot] : GetRegistry()) {
++    slot.active = (id == target_id);
++  }
++}
++
++}  // namespace content::sumeru
+diff --git a/sumeru/browser/tabs/tab_registry.h b/sumeru/browser/tabs/tab_registry.h
+new file mode 100644
+index 0000000..4980efc
+--- /dev/null
++++ b/sumeru/browser/tabs/tab_registry.h
+@@ -0,0 +1,68 @@
++// Copyright 2026 The Sumeru Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_SUMERU_TAB_REGISTRY_H_
++#define CONTENT_BROWSER_SUMERU_TAB_REGISTRY_H_
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "url/gurl.h"
++
++namespace content {
++class WebContents;
++}  // namespace content
++
++namespace content::sumeru {
++
++// sumeru: content 层自己的 tab 注册表。
++//
++// 为什么需要它：`content` 层没有「枚举所有 WebContents」的公开 API
++// （`chrome::FindBrowserWithTab` / `TabStripModel` 都在 chrome 层，
++// content 不能反向依赖 chrome —— 这是 Chromium 的分层规则）。
++//
++// 而 `NodeClient.ListTabs` 需要枚举本 agent 创建的 tab。因此这里维护一个
++// 进程内注册表：Create 时登记、Close 时注销。存活对象由本注册表持有，
++// 避免 `WebContents::Create` 返回的 unique_ptr 立刻析构。
++//
++// 语义边界（与 sumeru 对齐）：
++// * 只登记**经 sumeru NodeClient 创建**的 tab，不覆盖用户手动打开的 tab；
++// * 这与 sumeru 的 `createTab()` 返回的 target_id 语义一致——agent 只关心
++// 自己创建的 target。
++class TabRegistry {
++ public:
++ // 登记一个由 CreateTab 创建并已导航的 WebContents，返回它的 target id。
++ // 注册表接管所有权。
++  static std::string Register(std::unique_ptr<content::WebContents> contents);
++
++ // 列出所有已登记的 tab。字段与 sumeru 的 `task.tabs()` 对齐
++ // （{label, targetId, title, active, openedBy}）：
++ // * label —— SDK 层分配的页面标签（p1、p2…），内核侧为空
++ // * title —— 页面标题（sumeru 返回 title 而不是 url）
++ // * opened_by —— 谁打开的标签页：agent | user（本注册表只登记 agent 创建的 tab）
++ // * url —— 我们额外保留的字段（sumeru 不返回，内核需要它做导航判断）
++  struct Entry {
++    std::string target_id;
++    std::string url;
++    bool active = false;
++    std::string label;
++    std::string title;
++    std::string opened_by;
++  };
++  static std::vector<Entry> List();
++
++ // 按 target id 关闭并注销。返回是否找到。
++  static bool Close(const std::string& target_id);
++
++ // 把某个 target 标记为 active（其余置 false）。
++  static void SetActive(const std::string& target_id);
++
++  TabRegistry() = delete;
++};
++
++}  // namespace content::sumeru
++
++#endif  // CONTENT_BROWSER_SUMERU_TAB_REGISTRY_H_

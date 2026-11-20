@@ -1,0 +1,32 @@
+{
+  "name": "sumeru-shim",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sumeru runtime: native Chromium + K-Gateway + thin shim proxy",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "sumeru": "bin/sumeru.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "start": "node src/index.mjs",
+    "sumeru": "node bin/sumeru.mjs",
+    "skill": "node bin/sumeru.mjs skill",
+    "setup": "node scripts/setup.mjs",
+    "up": "docker compose -f deploy/compose.yaml up -d --build",
+    "down": "docker compose -f deploy/compose.yaml down",
+    "logs": "docker compose -f deploy/compose.yaml logs -f",
+    "smoke": "node scripts/smoke.mjs",
+    "acceptance": "node scripts/run-acceptance.mjs",
+    "acceptance:m09": "node scripts/acceptance/linux/m-series/m09-close-pending-eval.mjs",
+    "clean": "node scripts/clean.mjs",
+    "scan-secrets": "node scripts/scan-secrets.mjs",
+    "verify": "npm test && node scripts/setup.mjs --check && node scripts/scan-secrets.mjs",
+    "ci": "node scripts/ci.mjs",
+    "release:check": "node scripts/release.mjs --check"
+  }
+}

@@ -1,0 +1,19 @@
+# Keep the build context small: Dockerfile.runtime only needs
+# build/, src/, bin/, package.json and vendor/novnc.
+symbols/
+*.debug
+*.unstripped
+node_modules/
+.git/
+docs/
+scripts/
+test/
+dist/
+chromium/
+deploy/
+.dsh/
+README.md
+README.en.md
+LICENSE
+THIRD_PARTY_NOTICES.md
+build-info.json

@@ -1,0 +1,40 @@
+{
+  "name": "sumeru-kernel",
+  "chromiumVersion": "156.0.8078.74",
+  "kernelCommit": "87e334d",
+  "kernelCommitSubject": "NodeRef moved out of sumeru.mojom; overlay wiring cleaned",
+  "overlayCommit": "87e334d",
+  "overlay": {
+    "file": "chromium/overlay/current.patch",
+    "sha256": "5c941d3c407b3378fada729f9abb4d751a58172761944895af5df83cab05df29"
+  },
+  "builtAt": "2026-11-20T00:12:00+08:00",
+  "argsGn": {
+    "is_debug": false,
+    "is_official_build": false,
+    "symbol_level": 1,
+    "use_sysroot": true,
+    "is_clang": true
+  },
+  "chromeSha256": "ec2dc83e644d36db902e01108a8d99ad0f9ef71a79df5da24a1aa5d5d3b389f5",
+  "requiredFiles": [
+    "chrome",
+    "chrome_100_percent.pak",
+    "chrome_200_percent.pak",
+    "chrome_crashpad_handler",
+    "chrome-sandbox",
+    "icudtl.dat",
+    "libEGL.so",
+    "libGLESv2.so",
+    "libvk_swiftshader.so",
+    "libvulkan.so.1",
+    "resources.pak",
+    "snapshot_blob.bin",
+    "v8_context_snapshot.bin"
+  ],
+  "artifact": {
+    "name": "sumeru-kernel-156.0.8078.74-87e334d-linux-x64.tar.gz",
+    "url": "",
+    "sha256": "c2b5914c9f78981e71a70dd4f514be95ee1260aab7b6acc9ff01558beb546c4b"
+  }
+}

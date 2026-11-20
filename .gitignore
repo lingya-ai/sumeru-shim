@@ -1,0 +1,40 @@
+# 依赖与构建产物
+node_modules/
+/build/
+/dist/
+/out/
+/coverage/
+/.nyc_output/
+*.log
+tmp-*/
+.env
+local.settings.json
+
+# 第三方：仅跟踪 noVNC（离线构建需要）
+/vendor/*
+!/vendor/novnc/
+!/vendor/novnc/**
+
+# Python / 编辑器 / 系统
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 大二进制 / 本地覆盖
+*.pdb
+*.pak
+*.local.ps1
+*.local.mjs

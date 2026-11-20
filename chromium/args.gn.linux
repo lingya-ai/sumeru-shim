@@ -1,0 +1,32 @@
+# 须弥内核 gn 参数（Linux 版，Docker 构建用）
+# 与 Windows 版（args.gn）同构：release、静态、无 nacl、x64。
+
+is_debug = false
+is_component_build = false
+is_official_build = true
+
+target_cpu = "x64"
+target_os = "linux"
+
+enable_nacl = false
+
+# 符号：正式包 level=1（保留函数名，便于崩溃分析）
+symbol_level = 1
+blink_symbol_level = 0
+v8_symbol_level = 0
+
+# 构建内存/时长取舍：关掉 thin LTO 与 PGO
+use_thin_lto = false
+chrome_pgo_phase = 0
+
+# 品牌化资源（sumeru overlay 会改写这些常量）
+is_chrome_branded = false
+
+# Linux 专用：走 gclient 自带 sysroot + clang（默认）
+use_sysroot = true
+is_clang = true
+
+# 容器内无桌面：关掉 dbus/gnome keyring 等 X 依赖（减少构建依赖面）
+use_dbus = false
+use_gnome_keyring = false
+use_glib = true

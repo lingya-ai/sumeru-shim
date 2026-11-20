@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# Kernel build environment ().
+#
+# This image expects a Chromium source tree bind-mounted at /src and applies
+# chromium/overlay/current.patch. It does NOT download Chromium.
+#
+#   docker build -f chromium/Dockerfile.kernel -t sumeru-kernel-build chromium
+#   docker run --rm -v /path/to/chromium/src:/src -v "$PWD/build:/out" \
+#     sumeru-kernel-build
+#
+FROM debian:bookworm
+
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ENV http_proxy=$HTTP_PROXY \
+    https_proxy=$HTTPS_PROXY \
+    DEPOT_TOOLS_UPDATE=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git python3 curl ca-certificates lsb-release sudo xz-utils zstd \
+      python3-pkg-resources python3-setuptools file binutils \
+      pkg-config build-essential python3-dev \
+      libglib2.0-dev libgtk-3-dev libatk1.0-dev libasound2-dev \
+      libx11-dev libxext-dev libxfixes-dev libxcomposite-dev libxrandr-dev \
+      libxdamage-dev libdrm-dev libgbm-dev libnss3-dev libnspr4-dev \
+      libcups2-dev libpango1.0-dev libcairo2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git /opt/depot_tools
+ENV PATH="/opt/depot_tools:$PATH"
+
+COPY overlay/current.patch /overlay/current.patch
+COPY args.gn.linux /overlay/args.gn.linux
+COPY scripts/build-kernel.sh /usr/local/bin/build-kernel.sh
+RUN chmod +x /usr/local/bin/build-kernel.sh
+
+WORKDIR /src
+ENTRYPOINT ["/usr/local/bin/build-kernel.sh"]
