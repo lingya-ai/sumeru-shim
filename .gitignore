@@ -41,3 +41,6 @@ desktop.ini
 
 # 本地/内网构建脚本（不提交）
 /chromium/scripts/publish-kernel.sh
+
+# Chromium 源码缓存（按版本分目录，约 25 GB/版本）
+/chromium-src/

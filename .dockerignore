@@ -13,6 +13,7 @@ dist/
 chromium/
 deploy/
 .dsh/
+chromium-src/
 README.md
 README.en.md
 CHANGELOG.md

@@ -222,6 +222,7 @@ test/                node:test checks
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
 chromium/            kernel version, GN args, minimal overlay, kernel artifact Dockerfile
+chromium-src/        Chromium source cache (gitignored; one directory per version)
 docs/                architecture, development, operations, kernel, troubleshooting, versioning
 .github/workflows/   CI and Docker Hub image release
 vendor/novnc/        noVNC (MPL-2.0) for offline image builds

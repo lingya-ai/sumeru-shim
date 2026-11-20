@@ -39,6 +39,17 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 
 ## 4. 构建
 
+先按版本下载源码（放在 gitignored 的 `chromium-src/<version>/src`）：
+
+```bash
+chromium/scripts/fetch-kernel-source.sh
+# 或指定版本
+chromium/scripts/fetch-kernel-source.sh --version 156.0.8078.74
+```
+
+脚本会准备 `depot_tools`、gclient 配置、checkout tag 并同步依赖；完成后输出
+`SUMERU_SRC=.../chromium-src/156.0.8078.74/src`。
+
 本地/内网构建机执行（构建脚本由维护者本地维护，**不提交到仓库**）。
 以下为等价手动步骤：
 
@@ -50,11 +61,13 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 docker build -f chromium/Dockerfile.kernel -t sumeru-kernel-build chromium
 
 # 3) 应用 overlay + gn/ninja（源码挂 /src，产物落 /src/out/release-linux）
-docker run --rm -v /path/to/chromium/src:/src sumeru-kernel-build
+docker run --rm \
+  -v "$PWD/chromium-src/156.0.8078.74/src:/src" \
+  sumeru-kernel-build
 
 # 4) 打包 artifact（归档/备份）
 mkdir -p dist build
-SUMERU_SRC=/path/to/chromium/src SUMERU_VERSION=156.0.8078.74 \
+SUMERU_SRC="$PWD/chromium-src/156.0.8078.74/src" SUMERU_VERSION=156.0.8078.74 \
   SUMERU_COMMIT=87e334d bash chromium/scripts/package-kernel.sh dist
 tar -xzf dist/sumeru-kernel-*.tar.gz -C build
 

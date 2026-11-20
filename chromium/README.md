@@ -23,6 +23,8 @@
 
 ## 构建
 
+- 先下载/复用版本化源码：`chromium/scripts/fetch-kernel-source.sh`
+  （缓存到 gitignored 的 `chromium-src/<version>/src`）。
 - 默认：预编译 artifact（`npm run setup -- --from ...`），或已有 `build/`（`npm run setup -- --check`）。
 - 源码构建：`Dockerfile.kernel` + `scripts/build-kernel.sh`，步骤见 [docs/kernel.md](../docs/kernel.md)。
 

@@ -211,6 +211,7 @@ test/                node:test 单测
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example
 chromium/            内核版本、GN 参数、最小 overlay、kernel artifact Dockerfile
+chromium-src/        Chromium 源码缓存（gitignored；按版本分目录）
 docs/                架构、开发、运维、内核、排障、安全、版本、发布
 .github/workflows/   CI 与 Docker Hub 镜像发布
 vendor/novnc/        离线构建用 noVNC（MPL-2.0）
