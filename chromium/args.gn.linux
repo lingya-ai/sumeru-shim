@@ -22,6 +22,10 @@ chrome_pgo_phase = 0
 # 品牌化资源（sumeru overlay 会改写这些常量）
 is_chrome_branded = false
 
+# 生成完整的 Chromium 第三方许可证文件（LICENSES.chromium.html），
+# 二进制分发合规所需；构建后应出现在 out/release-linux/。
+generate_about_credits = true
+
 # Linux 专用：走 gclient 自带 sysroot + clang（默认）
 use_sysroot = true
 is_clang = true

@@ -9,7 +9,7 @@
 |---|---|
 | Chromium | `156.0.8078.74`（[`chromium/VERSION`](../chromium/VERSION)） |
 | 构建修订 | `87e334d`（见 `build-info.json`） |
-| GN 参数 | [`chromium/args.gn.linux`](../chromium/args.gn.linux)（`is_official_build=false`、`symbol_level=1`） |
+| GN 参数 | [`chromium/args.gn.linux`](../chromium/args.gn.linux)（`is_official_build=true`、`symbol_level=1`、`generate_about_credits=true`） |
 | 产物 | `build/chrome`，SHA256 见 `build-info.json` |
 | kernel image | `registry.ops.lingya.tech/sumeru/sumeru-kernel:<chromium>-<revision>`（私有；运行时从这里取 `/opt/sumeru`） |
 | archive | `sumeru-kernel-<chromium>-<revision>-linux-x64.tar.gz`（OSS 归档/SHA256；当前无公开 Release） |
@@ -68,6 +68,14 @@ docker push registry.ops.lingya.tech/sumeru/sumeru-kernel:156.0.8078.74-87e334d
 内核只在本地/内网构建机执行；GitHub 只从私有 registry 引用镜像，不编译 Chromium。
 
 首次 4–8 h；增量 10–30 min。构建机要求 Linux x64、≥150 GB 磁盘、≥32 GB 内存。
+
+构建后必须确认：
+
+```bash
+test -f /src/out/release-linux/LICENSES.chromium.html
+```
+
+`package-kernel.sh` 会把它放入 artifact；缺失时不要发布。
 
 ## 5. 升级 Chromium
 
