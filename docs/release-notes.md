@@ -4,10 +4,10 @@
 
 - **v2.0.0（BSD-3-Clause）已撤回**：GitHub/Gitee 的 Release 与 tag 已删除。
   已经下载或 fork 的副本仍受 BSD-3 授权；该授权无法追溯撤销。
-- **v2.1.0 Community Edition 尚未发布**：正在切换为 PolyForm Noncommercial
+- **v2.1.0 尚未发布**：正在切换为 PolyForm Noncommercial
   1.0.0 + 商业许可模式。
 
-## 社区版许可
+## 许可
 
 - 原创代码：**PolyForm Noncommercial 1.0.0**（个人/非商业使用免费）。
 - **商业使用需要商业许可证**：[LICENSE-COMMERCIAL.md](../LICENSE-COMMERCIAL.md)。

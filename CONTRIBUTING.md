@@ -4,7 +4,7 @@ Thanks for your interest in Sumeru.
 
 ## License of contributions
 
-Sumeru Community Edition is source-available under the PolyForm Noncommercial
+Sumeru is source-available under the PolyForm Noncommercial
 License 1.0.0. To keep the project able to offer commercial licenses, **all
 contributions require a signed Contributor License Agreement (CLA)** before they
 can be merged. See [CLA.md](CLA.md).

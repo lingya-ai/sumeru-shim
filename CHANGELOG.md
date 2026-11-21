@@ -7,7 +7,7 @@ Keep a Changelog; versions follow Semantic Versioning.
 
 ### Added
 
-- Community Edition licensing: PolyForm Noncommercial 1.0.0 + commercial license.
+- Licensing: PolyForm Noncommercial 1.0.0 + commercial license.
 - `LICENSE-COMMERCIAL.md`, `CLA.md`, `CONTRIBUTING.md`, `TRADEMARK.md`.
 - MCP agent skill at `.dsh/skills/sumeru-browser/` (tools, recipes, troubleshooting).
 - MCP `capture_page` now returns an MCP **image content block**
@@ -44,4 +44,4 @@ Keep a Changelog; versions follow Semantic Versioning.
 ## [2.0.0] - 2026-11-19
 
 Initial contraction release (BSD-3-Clause). Withdrawn; do not redistribute as a
-community edition. Copies already distributed retain their BSD-3 rights.
+current release. Copies already distributed retain their BSD-3 rights.

@@ -1,6 +1,6 @@
 # Commercial license
 
-Sumeru Community Edition is licensed under the **PolyForm Noncommercial
+Sumeru is licensed under the **PolyForm Noncommercial
 License 1.0.0** (see [LICENSE](LICENSE)). It is **source-available**, not OSI
 open source.
 

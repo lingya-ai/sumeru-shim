@@ -1,4 +1,4 @@
-# Sumeru · AI-native cloud browser (Community Edition)
+# Sumeru · AI-native cloud browser
 
 An **AI-native cloud browser built on Chromium** — the open-source core behind
 Google Chrome.
@@ -11,7 +11,7 @@ required** — no Chrome install, no Playwright, no automation runtime on the cl
 > real `TabStripModel` tabs, and an agent-facing control surface. No SDK injection,
 > no CDP port.
 
-> **Community edition**: source-available for personal/noncommercial use under
+> **License**: source-available for personal/noncommercial use under
 > PolyForm Noncommercial 1.0.0; **commercial use requires a commercial license**.
 > This is not an OSI open-source project.
 

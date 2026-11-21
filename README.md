@@ -1,4 +1,4 @@
-# Sumeru（须弥）· AI 原生云浏览器（社区版）
+# Sumeru（须弥）· AI 原生云浏览器
 
 以 **Chromium（Google Chrome 同源内核）** 为原型构建的 AI 原生云浏览器。
 
@@ -9,7 +9,7 @@
 > 不是无头爬虫，也不是远程桌面套壳：原生 Chromium 窗口 + 真实 TabStripModel +
 > 面向 Agent 的操作面；页面没有 SDK 注入，也没有 CDP 端口。
 
-> **社区版 / Community edition**：源码可见，个人/非商业使用免费（PolyForm Noncommercial 1.0.0）；
+> **许可**：源码可见，个人/非商业使用免费（PolyForm Noncommercial 1.0.0）；
 > **商业使用需要商业许可证**。本项目不是 OSI 开源项目。
 
 ## 为什么是「AI 原生」

@@ -94,12 +94,12 @@ node scripts/version.mjs --tag v2.1.0
 - 推荐 Conventional Commits：`feat:` / `fix:` / `docs:` / `chore:` / `security:`；
 - PR 必须过 `ci`；
 - 发布 tag 只由维护者创建；
-- 不开源 BSD 版本：v2.0.0 的 Release/tag 已撤回，后续只发社区版/商业版。
+- 不开源 BSD 版本：v2.0.0 的 Release/tag 已撤回，后续只发非商业许可版本/商业许可版本。
 
 ## 8. 许可证与商业版
 
-- 社区版：PolyForm Noncommercial 1.0.0；
-- 商业版：单独商业许可；
+- 非商业许可：PolyForm Noncommercial 1.0.0；
+- 商业许可：单独商业许可；
 - Docker 镜像标签需带 `org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0`；
 - 发布镜像不等于授予商业使用权。
 

@@ -1,6 +1,6 @@
-# 发布检查清单（Community Edition v2.1.0）
+# 发布检查清单（v2.1.0）
 
-> 当前无公开 Release；本清单用于下一次社区版/商业版发布。
+> 当前无公开 Release；本清单用于下一次非商业/商业版本发布。
 > `node scripts/release.mjs --check` 校验本地输入。
 
 ## 1. 法务门禁
