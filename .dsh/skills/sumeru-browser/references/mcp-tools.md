@@ -1,9 +1,9 @@
 # MCP tools reference
 
-The Sumeru MCP server is `bin/sumeru-mcp.mjs`. It speaks **MCP over stdio**
-(JSON-RPC 2.0) and exposes only **tools** (no prompts/resources).
+The Sumeru MCP server is exposed by the shim at `POST /mcp` (Streamable HTTP,
+stateless JSON-only) and exposes only **tools** (no prompts/resources).
 
-- `initialize` → `protocolVersion: "2024-11-05"`, `capabilities.tools`
+- `initialize` → `protocolVersion: "2025-06-18"`, `capabilities.tools`
 - `tools/list` → the 12 tools below
 - `tools/call` → `{name, arguments}`
 
@@ -20,8 +20,20 @@ Successful call:
 ```
 
 The `text` is usually **pretty-printed JSON** of the gateway result. Parse it
-before using fields. `capture_page` returns a very large JSON string containing
-base64; handle it as data, not as chat text.
+before using fields.
+
+`capture_page` is the exception: it returns an MCP **image content block**:
+
+```json
+{
+  "content": [
+    { "type": "image", "data": "iVBORw0...", "mimeType": "image/png" }
+  ]
+}
+```
+
+The `data` is base64 PNG; there is no surrounding JSON text. The call activates
+a background tab first.
 
 Failed call:
 
@@ -97,7 +109,10 @@ the bracketed code.
 ### `capture_page`
 
 - Arguments: `{ "targetId": "..." }`
-- Result: `{"pngBase64": "iVBORw0...", "bytes": 4640}`
+- Result: MCP image content:
+  ```json
+  { "type": "image", "data": "<base64 PNG>", "mimeType": "image/png" }
+  ```
 - PNG of the page surface, no browser chrome. Activates a background tab first.
 - Failure: `SUMERU_SCREENSHOT_FAILED` (page not painted yet).
 
@@ -143,11 +158,12 @@ the bracketed code.
 
 ## Configuration
 
+Streamable HTTP:
+
 ```json
 {
-  "command": "node",
-  "args": ["<repo>/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080"],
-  "env": { "SUMERU_API_KEY": "<optional>" }
+  "type": "http",
+  "url": "http://127.0.0.1:8080/mcp"
 }
 ```
 

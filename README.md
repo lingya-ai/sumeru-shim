@@ -1,6 +1,6 @@
 # Sumeru（须弥）· AI 原生云浏览器（社区版）
 
-以 **Chromium 156（Google Chrome 同源内核）** 为原型构建的 AI 原生云浏览器。
+以 **Chromium（Google Chrome 同源内核）** 为原型构建的 AI 原生云浏览器。
 
 浏览器运行在云端容器中，**7×24 在线**；Agent 通过统一 Gateway / MCP 操作真实的浏览器，
 人类通过 noVNC 实时观看和接管。**使用端不需要本地电脑**，不需要安装 Chrome、Playwright
@@ -22,7 +22,7 @@
 | **人机共处** | 人类在 noVNC 里看见并直接操作同一个浏览器；无门控、无仲裁，是否冲突由使用者判断 |
 | **无本地依赖** | 浏览器、GPU 库、输入法、noVNC 都在云端；客户端只需网络和一个浏览器 |
 | **无 CDP / 无注入** | 没有 `--remote-debugging-*`、没有监听端口、没有页面 SDK；操作面只有私有 UDS gateway |
-| **可审计** | 内核只保留最小 overlay（20 文件 / 123 KB），其余是 stock Chromium 156 |
+| **可审计** | 内核只保留最小 overlay（20 文件 / 123 KB），其余是 stock Chromium |
 
 ## 典型场景
 
@@ -36,16 +36,17 @@
 
 ```text
 Agent（LLM / 应用）
-  │  HTTP POST /gw {method, params}   或 MCP 工具
+  │  HTTP POST /gw {method, params}   或 POST /mcp（Streamable HTTP）
   │  curl / SDK / MCP client
   ▼
 薄 shim（node src/index.mjs）                       :8080
   ├─ 启动 chrome（无 --remote-debugging-*）
   ├─ GET /healthz（八层健康）
-  └─ POST /gw → gateway 客户端
+  ├─ POST /gw → gateway 客户端
+  └─ POST /mcp → MCP tools（无状态 JSON）
   │  UDS /data/sumeru-gateway.sock（token）
   ▼
-Chromium 156（自建内核，唯一状态权威）
+Chromium（自建内核，唯一状态权威）
   ├─ K-Gateway（浏览器进程内；JSON-line over UDS）
   ├─ TabStripModel 真实标签（人类可见、可点）
   ├─ evaluateTarget → 进程内 DevToolsAgentHost → Runtime.evaluate
@@ -80,9 +81,7 @@ npm run up
 npm run smoke
 ```
 
-> 内核镜像存放在私有 registry `registry.ops.lingya.tech/sumeru/sumeru-kernel`；
-> 没有公开的预编译 artifact。可自行构建（见 [docs/kernel.md](docs/kernel.md)），
-> 或从维护者获取归档后使用 `--from`。
+> 仓库不包含 Chromium 源码或预编译内核；请按 [docs/kernel.md](docs/kernel.md) 下载源码并本地构建。
 
 打开 **http://127.0.0.1:6901/vnc.html**，能看到原生 Chromium 窗口。
 
@@ -105,6 +104,109 @@ npm run down
 npm run acceptance      # m-series
 npm run acceptance:m09  # 关标签 + 在途求值回归
 ```
+
+## 构建 Chromium 内核
+
+内核源码不在仓库里；开发时按版本缓存到 gitignored 的 `chromium-src/<version>/src`。
+
+### 1. 下载源码
+
+```bash
+# 推荐：浅层源码，不拉完整历史
+chromium/scripts/fetch-kernel-source.sh --shallow --proxy http://127.0.0.1:3128
+
+# 需要更多历史时（例如构建脚本要 git log）
+chromium/scripts/fetch-kernel-source.sh --shallow --depth 20 --jobs 1
+
+# 不跑 gclient runhooks，交给 build-kernel.sh 补 clang/sysroot
+chromium/scripts/fetch-kernel-source.sh --shallow --no-hooks
+```
+
+默认仍是完整历史；`--shallow` 使用 `git clone --depth` + `gclient sync --no-history`。
+代理默认不使用；`--proxy` 或 `SUMERU_PROXY` 显式开启。
+
+完成后会输出：
+
+```text
+SUMERU_SRC=.../chromium-src/<version>/src
+```
+
+下文用：
+
+```bash
+VERSION="$(cat chromium/VERSION)"
+SRC="$PWD/chromium-src/$VERSION/src"
+```
+
+### 2. 应用 overlay，直接改源码
+
+`chromium/overlay/current.patch` 是对 pristine Chromium 的 diff。第一次开发：
+
+```bash
+git -C "$SRC" apply --check chromium/overlay/current.patch
+git -C "$SRC" apply chromium/overlay/current.patch
+```
+
+之后直接改 `$SRC` 下的文件（例如 `sumeru/browser/gateway/`、`chrome/browser/sumeru/`、
+`content/browser/renderer_host/sumeru_page_capture.cc`）。
+
+如果 patch 已经应用，`build-kernel.sh` 会自动跳过 apply；不要重复打。
+
+### 3. 增量构建
+
+```bash
+docker build -f chromium/Dockerfile.kernel -t sumeru-kernel-build chromium
+docker run --rm -it \
+  -v "$SRC:/src" \
+  -e SUMERU_SRC=/src \
+  sumeru-kernel-build
+```
+
+- 首次 4–8 h；之后增量 10–30 min。
+- 构建产物在 `$SRC/out/release-linux/`。
+- 改 `chromium/args.gn.linux`（如 `is_debug=true`、`symbol_level=2`）会重新 `gn gen`。
+- 只想快速验证 overlay 是否还能应用：`git -C "$SRC" apply --check chromium/overlay/current.patch`。
+
+### 4. 让运行时用上新内核
+
+```bash
+SUMERU_SRC="$SRC" SUMERU_VERSION="$VERSION" \
+  SUMERU_COMMIT="$(git -C "$SRC" rev-parse --short HEAD)" \
+  bash chromium/scripts/package-kernel.sh dist
+
+rm -rf build && mkdir build
+tar -xzf dist/sumeru-kernel-*.tar.gz -C build
+npm run up
+npm run smoke
+```
+
+`npm run up` 会用新的 `build/` 重建运行时镜像；只改 shim 时不需要重新编译 Chromium。
+
+### 5. 重新生成 overlay
+
+改完源码后，把“当前源码相对 pristine 的差异”导回 patch：
+
+```bash
+# 只把 overlay 的新增路径标记为 intent-to-add（不要 git add -A，
+# 否则 gclient 拉取的第三方依赖也会被卷进 patch）
+git -C "$SRC" add -N -- \
+  sumeru \
+  chrome/browser/sumeru \
+  content/browser/renderer_host/sumeru_page_capture.cc \
+  content/public/browser/sumeru_page_capture.h
+git -C "$SRC" diff --binary > chromium/overlay/current.patch
+git -C "$SRC" reset
+```
+
+生成后建议在干净源码树上验证：
+
+```bash
+git -C "$SRC" apply --reverse --check chromium/overlay/current.patch
+```
+
+排障与运行日志见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+
+`src/`、`bin/`、`scripts/` 的改动走正常的 Node/Docker 循环。
 
 ## 部署到云端
 
@@ -153,14 +255,30 @@ curl -s http://127.0.0.1:8080/gw \
 
 ### MCP
 
-Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
+推荐使用 shim 自带的 **Streamable HTTP** endpoint，客户端不需要 Node：
+
+```text
+POST http://127.0.0.1:8080/mcp
+协议版本：2025-06-18
+传输：无状态 JSON-only
+```
+
+MCP 客户端配置：
 
 ```json
 {
-  "command": "node",
-  "args": ["<repo>/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080"]
+  "mcpServers": {
+    "sumeru": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
 }
 ```
+
+> 当前版本的 `/mcp` **暂不鉴权**，只应绑定 `127.0.0.1` 或内网；不要直接暴露公网。
+
+Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
 
 ### 求值语义
 
@@ -187,7 +305,7 @@ Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/s
 `evaluateTarget` 等价于在页面主世界执行任意 JS（可读 cookie/DOM）。这是 Agent 能力的来源，
 也是最大攻击面：
 
-- 默认只绑回环；不要把 `/gw` 直接暴露公网；
+- 默认只绑回环；不要把 `/gw` 或 `/mcp` 直接暴露公网；
 - 对外必须设置 `SUMERU_API_KEY`，并在网络层加访问控制；
 - noVNC 默认无密码，云上必须套 VPN/反代 + 认证 + TLS；
 - 单容器单用户；不要用同一个浏览器 profile 给互不信任的租户；
@@ -205,8 +323,8 @@ Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/s
 ## 仓库结构
 
 ```text
-src/                 薄 shim（spawn chrome + /healthz + /gw 代理）
-bin/                 CLI（sumeru.mjs）、MCP（sumeru-mcp.mjs）、容器启动脚本
+src/                 薄 shim（spawn chrome + /healthz + /gw + /mcp）
+bin/                 CLI（sumeru.mjs）、容器启动脚本
 test/                node:test 单测
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example

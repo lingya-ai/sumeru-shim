@@ -15,8 +15,9 @@ symbol_level = 1
 blink_symbol_level = 0
 v8_symbol_level = 0
 
-# 构建内存/时长取舍：关掉 thin LTO 与 PGO
+# 构建内存/时长取舍：关掉 thin LTO、CFI 与 PGO
 use_thin_lto = false
+is_cfi = false
 chrome_pgo_phase = 0
 
 # 品牌化资源（sumeru overlay 会改写这些常量）
@@ -30,7 +31,7 @@ generate_about_credits = true
 use_sysroot = true
 is_clang = true
 
-# 容器内无桌面：关掉 dbus/gnome keyring 等 X 依赖（减少构建依赖面）
-use_dbus = false
+# 容器内无桌面：保留 dbus（remoting 依赖），关掉 gnome keyring
+use_dbus = true
 use_gnome_keyring = false
 use_glib = true

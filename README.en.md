@@ -1,6 +1,6 @@
 # Sumeru · AI-native cloud browser (Community Edition)
 
-An **AI-native cloud browser built on Chromium 156** — the open-source core behind
+An **AI-native cloud browser built on Chromium** — the open-source core behind
 Google Chrome.
 
 The browser runs in a cloud container, **24/7**; agents drive a real browser through
@@ -25,7 +25,7 @@ required** — no Chrome install, no Playwright, no automation runtime on the cl
 | **Human in the loop** | Humans see and operate the same browser through noVNC; no gating, no arbitration |
 | **No local footprint** | Browser, GPU libraries, IME and noVNC live in the cloud; the client only needs network and a browser |
 | **No CDP, no injection** | No `--remote-debugging-*`, no listening port, no page SDK; the only surface is a private UDS gateway |
-| **Auditable kernel** | A minimal 20-file / 123 KB overlay on stock Chromium 156 |
+| **Auditable kernel** | A minimal 20-file / 123 KB overlay on stock Chromium |
 
 ## Use cases
 
@@ -39,15 +39,16 @@ required** — no Chrome install, no Playwright, no automation runtime on the cl
 
 ```text
 Agent (LLM / app)
-  │  HTTP POST /gw {method, params}   or MCP tools
+  │  HTTP POST /gw {method, params}   or POST /mcp (Streamable HTTP)
   ▼
 thin shim (node src/index.mjs)                    :8080
   ├─ spawns chrome (no --remote-debugging-*)
   ├─ GET /healthz (8 layers)
-  └─ POST /gw → gateway client
+  ├─ POST /gw → gateway client
+  └─ POST /mcp → MCP tools (stateless JSON)
   │  UDS /data/sumeru-gateway.sock (token)
   ▼
-Chromium 156 (custom kernel, single source of truth)
+Chromium (custom kernel, single source of truth)
   ├─ K-Gateway (in browser process; JSON lines over UDS)
   ├─ real TabStripModel tabs (visible/clickable by humans)
   ├─ evaluateTarget → in-process DevToolsAgentHost → Runtime.evaluate
@@ -82,10 +83,8 @@ npm run up
 npm run smoke
 ```
 
-> Kernel images live in the private registry
-> `registry.ops.lingya.tech/sumeru/sumeru-kernel`; there is no public prebuilt
-> artifact. Build it yourself (see [docs/kernel.md](docs/kernel.md)) or use an
-> archived copy from the maintainers with `--from`.
+> The repository does not contain Chromium source or a prebuilt kernel; follow
+> [docs/kernel.md](docs/kernel.md) to download the source and build it locally.
 
 Open **http://127.0.0.1:6901/vnc.html** to see the native Chromium window.
 
@@ -108,6 +107,112 @@ npm run down
 npm run acceptance      # m-series
 npm run acceptance:m09  # close tab with in-flight evaluate
 ```
+
+## Building the Chromium kernel
+
+Kernel source is not vendored. It is cached per version under the gitignored
+`chromium-src/<version>/src`.
+
+### 1. Fetch source
+
+```bash
+# Recommended: shallow source, no full history
+chromium/scripts/fetch-kernel-source.sh --shallow --proxy http://127.0.0.1:3128
+
+# More history if the build needs git log
+chromium/scripts/fetch-kernel-source.sh --shallow --depth 20 --jobs 1
+
+# Skip gclient runhooks; build-kernel.sh can fetch clang/sysroot later
+chromium/scripts/fetch-kernel-source.sh --shallow --no-hooks
+```
+
+The default is still full history; `--shallow` uses `git clone --depth` plus
+`gclient sync --no-history`. Proxies are disabled unless `--proxy` or
+`SUMERU_PROXY` is set.
+
+It prints:
+
+```text
+SUMERU_SRC=.../chromium-src/<version>/src
+```
+
+Below:
+
+```bash
+VERSION="$(cat chromium/VERSION)"
+SRC="$PWD/chromium-src/$VERSION/src"
+```
+
+### 2. Apply the overlay and edit source
+
+`chromium/overlay/current.patch` is the diff against pristine Chromium. For the
+first edit:
+
+```bash
+git -C "$SRC" apply --check chromium/overlay/current.patch
+git -C "$SRC" apply chromium/overlay/current.patch
+```
+
+Then edit files under `$SRC` (for example `sumeru/browser/gateway/`,
+`chrome/browser/sumeru/`, `content/browser/renderer_host/sumeru_page_capture.cc`).
+
+If the patch is already applied, `build-kernel.sh` skips it; do not apply twice.
+
+### 3. Incremental build
+
+```bash
+docker build -f chromium/Dockerfile.kernel -t sumeru-kernel-build chromium
+docker run --rm -it \
+  -v "$SRC:/src" \
+  -e SUMERU_SRC=/src \
+  sumeru-kernel-build
+```
+
+- First build 4–8 h; incremental 10–30 min.
+- Output stays in `$SRC/out/release-linux/`.
+- Changing `chromium/args.gn.linux` (for example `is_debug=true`,
+  `symbol_level=2`) reruns `gn gen`.
+- Quick overlay check: `git -C "$SRC" apply --check chromium/overlay/current.patch`.
+
+### 4. Run the new kernel
+
+```bash
+SUMERU_SRC="$SRC" SUMERU_VERSION="$VERSION" \
+  SUMERU_COMMIT="$(git -C "$SRC" rev-parse --short HEAD)" \
+  bash chromium/scripts/package-kernel.sh dist
+
+rm -rf build && mkdir build
+tar -xzf dist/sumeru-kernel-*.tar.gz -C build
+npm run up
+npm run smoke
+```
+
+`npm run up` rebuilds the runtime image with the new `build/`. Shim-only changes
+do not need a Chromium rebuild.
+
+### 5. Regenerate the overlay
+
+Export the current source diff back to the patch:
+
+```bash
+# Mark only overlay paths as intent-to-add. Do not use git add -A:
+# gclient-fetched third-party deps would otherwise leak into the patch.
+git -C "$SRC" add -N -- \
+  sumeru \
+  chrome/browser/sumeru \
+  content/browser/renderer_host/sumeru_page_capture.cc \
+  content/public/browser/sumeru_page_capture.h
+git -C "$SRC" diff --binary > chromium/overlay/current.patch
+git -C "$SRC" reset
+```
+
+Validate on the current tree:
+
+```bash
+git -C "$SRC" apply --reverse --check chromium/overlay/current.patch
+```
+
+For troubleshooting and runtime logs, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Deploy to the cloud
 
@@ -159,14 +264,31 @@ curl -s http://127.0.0.1:8080/gw \
 
 ### MCP
 
-Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
+Recommended: the shim's **Streamable HTTP** endpoint. The client does not need Node:
+
+```text
+POST http://127.0.0.1:8080/mcp
+protocol: 2025-06-18
+transport: stateless, JSON-only
+```
+
+MCP client config:
 
 ```json
 {
-  "command": "node",
-  "args": ["<repo>/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080"]
+  "mcpServers": {
+    "sumeru": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
 }
 ```
+
+> The current `/mcp` endpoint is **unauthenticated** for first-version validation;
+> bind it to `127.0.0.1` or a private network only.
+
+Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
 
 ### Evaluate semantics
 
@@ -193,7 +315,7 @@ Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/
 `evaluateTarget` is arbitrary JS in the page's main world (cookies/DOM included).
 That is the source of agent power and the largest attack surface:
 
-- bind to loopback by default; never expose `/gw` directly to the public internet;
+- bind to loopback by default; never expose `/gw` or `/mcp` directly to the public internet;
 - for remote access, set `SUMERU_API_KEY` and add network access control;
 - noVNC has no password by default; put it behind VPN/reverse proxy with auth + TLS;
 - one browser/profile per tenant; do not share a profile between untrusted users;
@@ -216,8 +338,8 @@ That is the source of agent power and the largest attack surface:
 ## Layout
 
 ```text
-src/                 thin shim (spawn chrome, /healthz, /gw proxy)
-bin/                 CLI (sumeru.mjs), MCP (sumeru-mcp.mjs), container scripts
+src/                 thin shim (spawn chrome, /healthz, /gw, /mcp)
+bin/                 CLI (sumeru.mjs), container startup scripts
 test/                node:test checks
 scripts/             setup / smoke / clean / scan-secrets / acceptance
 deploy/              compose.yaml + .env.example

@@ -119,7 +119,8 @@ last state. For a specific value:
 capture_page {"targetId":"<id>"}
 ```
 
-The result text is JSON: `{"pngBase64":"...","bytes":4640}`. Decode base64 to a
+The result is an MCP image content block:
+`{"type":"image","data":"<base64>","mimeType":"image/png"}`. Decode `data` to a
 PNG file in the client. Screenshots are page-only (no tab strip/address bar).
 
 ## 8. Multi-tab workflow

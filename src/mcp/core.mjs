@@ -1,28 +1,15 @@
-#!/usr/bin/env node
-// 须弥 MCP server（gateway-only）：
-// 工具面 = gateway 方法 **1:1**。每个工具的调用都是 `POST {gate}/gw {method, params}`，
-// 内核返回的结果/错误码/错误信息原样转成 MCP 结果，MCP 层不翻译、不改写。
-//
-// 协议：JSON-RPC over stdio（MCP 标准传输），支持 initialize / tools/list / tools/call。
-//
-// 用法（MCP 客户端配置）：
-//   command: node
-//   args: ["<repo>/sumeru-shim/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080", "--key", "<SUMERU_API_KEY>"]
-//
-// 环境变量：SUMERU_GATE_URL（默认 http://127.0.0.1:8080）、SUMERU_API_KEY
-//          （设置时随每次调用带 `X-Sumeru-Token` 头）。
-//
-// 删除面：sumeru_round / sumeru_snapshot（`/round` 已不存在）、
-// sumeru_visual / sumeru_spaces（多空间与视觉镜像已删除）。
+/**
+ * Shared MCP tool core: tool definitions and JSON-RPC dispatch.
+ *
+ * Served by the shim's Streamable HTTP endpoint:
+ *   POST /mcp  (stateless JSON-only, protocol 2025-06-18)
+ *
+ * No Node-specific I/O here; gatewayCall is injected.
+ */
 
-const args = process.argv.slice(2);
-const arg = (n, d) => {
-  const i = args.indexOf(`--${n}`);
-  return i >= 0 ? args[i + 1] : d;
-};
-
-const GATE = arg("gate", process.env.SUMERU_GATE_URL ?? "http://127.0.0.1:8080");
-const KEY = arg("key", process.env.SUMERU_API_KEY ?? "");
+export const PROTOCOL_VERSION = "2025-06-18";
+export const SERVER_NAME = "sumeru-mcp";
+export const SERVER_VERSION = "0.4.0";
 
 const targetId = {
   type: "string",
@@ -30,7 +17,7 @@ const targetId = {
 };
 
 // 工具清单 = gateway 方法 1:1（方法名 → 工具名做 snake_case 直译）。
-const TOOLS = [
+export const TOOLS = [
   {
     name: "ping",
     method: "ping",
@@ -104,7 +91,7 @@ const TOOLS = [
   {
     name: "capture_page",
     method: "captureScreenshot",
-    description: "截取指定标签的页面（PNG，不含浏览器 chrome），返回 base64。",
+    description: "截取指定标签的页面（PNG，不含浏览器 chrome），返回 MCP image content（base64）。",
     inputSchema: {
       type: "object",
       properties: { targetId },
@@ -183,16 +170,9 @@ const TOOLS = [
   },
 ];
 
-function jsonRpc(id, result) {
-  return JSON.stringify({ jsonrpc: "2.0", id, result });
-}
 
-function jsonRpcError(id, code, message) {
-  return JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } });
-}
-
-/** 只把工具 schema 里声明的参数原样送出去（多给的键丢弃，缺的保持缺省）。 */
-function pickParams(tool, input = {}) {
+/** Only pass arguments declared in the tool schema; drop unknown keys. */
+export function pickParams(tool, input = {}) {
   const properties = tool.inputSchema?.properties ?? {};
   const params = {};
   for (const key of Object.keys(properties)) {
@@ -201,112 +181,104 @@ function pickParams(tool, input = {}) {
   return params;
 }
 
-/** POST /gw：方法/参数原样到达 gateway，错误码/错误信息原样上抛。 */
-async function gatewayCall(method, params) {
-  const headers = { "content-type": "application/json" };
-  if (KEY) headers["x-sumeru-token"] = KEY;
-  const res = await fetch(`${GATE}/gw`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ method, params }),
-  });
-  const text = await res.text();
-  let payload;
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-  if (!res.ok) {
-    if (res.status === 401) {
-      throw new Error(
-        "网关鉴权失败（401）：检查 SUMERU_API_KEY 与 X-Sumeru-Token 头是否一致",
-      );
-    }
-    throw new Error(`网关 /gw 返回 ${res.status}: ${JSON.stringify(payload).slice(0, 300)}`);
-  }
-  if (payload?.ok === false) {
-    const error = new Error(payload?.error?.message ?? "gateway error");
-    error.code = payload?.error?.code ?? "SUMERU_OPERATION_FAILED";
-    throw error;
-  }
-  return payload?.result === undefined ? null : payload.result;
-}
-
-function textResult(value) {
+export function textResult(value) {
   const text =
     typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2);
   return { content: [{ type: "text", text }] };
 }
 
-async function callTool(name, input = {}) {
+export function imageResult(value) {
+  const data = value?.pngBase64;
+  if (typeof data !== "string" || data.length === 0) {
+    throw new Error("capture_page: gateway returned no pngBase64");
+  }
+  return {
+    content: [
+      {
+        type: "image",
+        data,
+        mimeType: "image/png",
+      },
+    ],
+  };
+}
+
+export async function callTool(name, input, gatewayCall) {
   const tool = TOOLS.find((item) => item.name === name);
   if (!tool) throw new Error(`未知工具: ${name}`);
-  return textResult(await gatewayCall(tool.method, pickParams(tool, input)));
+  const value = await gatewayCall(tool.method, pickParams(tool, input ?? {}));
+  return tool.name === "capture_page" ? imageResult(value) : textResult(value);
 }
 
-async function handleRequest(req) {
-  const { id, method, params } = req;
+export function initializeResult() {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    capabilities: { tools: {} },
+    serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+  };
+}
 
-  switch (method) {
-    case "initialize":
-      return jsonRpc(id, {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
-        serverInfo: { name: "sumeru-mcp", version: "0.2.0" },
-      });
+export function toolsListResult() {
+  return {
+    tools: TOOLS.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  };
+}
 
-    case "tools/list":
-      return jsonRpc(id, {
-        tools: TOOLS.map(({ name, description, inputSchema }) => ({
-          name,
-          description,
-          inputSchema,
-        })),
-      });
+function rpcError(id, code, message) {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+}
 
-    case "tools/call": {
-      const name = params?.name;
-      try {
-        const result = await callTool(name, params?.arguments ?? {});
-        return jsonRpc(id, result);
-      } catch (error) {
-        const code = error?.code ? `[${error.code}] ` : "";
-        return jsonRpc(id, {
-          content: [{ type: "text", text: `工具失败: ${code}${error?.message ?? error}` }],
-          isError: true,
-        });
-      }
-    }
-
-    case "notifications/initialized":
-      return null; // 通知无需响应
-
-    default:
-      return jsonRpcError(id, -32601, `未实现的方法: ${method}`);
+/**
+ * Handle one JSON-RPC message.
+ * Returns an object, or null for notifications (no response).
+ */
+export async function handleMcpRequest(req, gatewayCall) {
+  if (!req || typeof req !== "object" || Array.isArray(req)) {
+    return rpcError(null, -32600, "Invalid Request");
   }
-}
+  const id = req.id ?? null;
+  const method = req.method;
 
-// —— stdio 主循环（按行分隔的 JSON-RPC）——
-let buffer = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", async (chunk) => {
-  buffer += chunk;
-  let idx;
-  while ((idx = buffer.indexOf("\n")) >= 0) {
-    const line = buffer.slice(0, idx).trim();
-    buffer = buffer.slice(idx + 1);
-    if (!line) continue;
-    let req;
+  if (method === "initialize") {
+    return { jsonrpc: "2.0", id, result: initializeResult() };
+  }
+  if (method === "notifications/initialized") {
+    return null;
+  }
+  if (method === "ping") {
+    return { jsonrpc: "2.0", id, result: {} };
+  }
+  if (method === "tools/list") {
+    return { jsonrpc: "2.0", id, result: toolsListResult() };
+  }
+  if (method === "tools/call") {
+    const name = req?.params?.name;
+    if (typeof name !== "string" || name.length === 0) {
+      return rpcError(id, -32602, "tools/call: params.name must be a string");
+    }
     try {
-      req = JSON.parse(line);
-    } catch {
-      process.stdout.write(jsonRpcError(null, -32700, "JSON 解析失败") + "\n");
-      continue;
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: await callTool(name, req?.params?.arguments ?? {}, gatewayCall),
+      };
+    } catch (error) {
+      const code = error?.code ? `[${error.code}] ` : "";
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [
+            { type: "text", text: `工具失败: ${code}${error?.message ?? error}` },
+          ],
+          isError: true,
+        },
+      };
     }
-    const response = await handleRequest(req);
-    if (response) process.stdout.write(response + "\n");
   }
-});
-
-process.stdin.on("end", () => process.exit(0));
+  return rpcError(id, -32601, `未实现的方法: ${method ?? "(missing)"}`);
+}

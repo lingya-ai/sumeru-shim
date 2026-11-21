@@ -5,7 +5,7 @@
 #   docker build -f Dockerfile.runtime -t sumeru-runtime:<tag> .
 #
 # shim 结构（gateway）：src/{index,runtime,startup,ime-text}.mjs +
-# src/ipc/gateway-client.mjs + bin/{start-all.sh,start-novnc.sh,sumeru-mcp.mjs}。
+# src/ipc/gateway-client.mjs + bin/{start-all.sh,start-novnc.sh,sumeru.mjs}。
 # 已删除：heavens/bindings/viewer/host-ipc/checkpoint/transport/round。
 # Image hardening: pin the base by digest for reproducible builds.
 #   docker build --build-arg BASE_IMAGE=debian:bookworm-slim@sha256:<digest> ...

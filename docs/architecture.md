@@ -9,12 +9,13 @@
 
 ```text
 Agent（LLM / 应用）
-  │  HTTP POST /gw {method, params}   或 MCP 工具
+  │  HTTP POST /gw {method, params}   或 POST /mcp（Streamable HTTP）
   ▼
 薄 shim（node src/index.mjs）                         :8080
   ├─ spawn chrome（无 --remote-debugging-*）
   ├─ GET /healthz（八层）
-  └─ POST /gw → gateway 客户端
+  ├─ POST /gw → gateway 客户端
+  └─ POST /mcp → MCP tools（无状态 JSON）
   │  UDS /data/sumeru-gateway.sock（hello/token/v2）
   ▼
 Chromium 156（自建内核，唯一状态权威）
@@ -32,7 +33,7 @@ Xvfb ← x11vnc ← websockify/noVNC                     :6901
 | 层 | 组件 | 职责 | 不做什么 |
 |---|---|---|---|
 | 呈现 | Xvfb / x11vnc / websockify / noVNC + 原生 Chromium 窗口 | 人类观看与直接操作 | 零自定义 UI |
-| 门面 | `src/`、`bin/`、`deploy/compose.yaml` | 拉起 chrome、持 token、`/gw` 代理、健康/退出语义 | 无状态；不做 ledger/viewer/CDP |
+| 门面 | `src/`、`bin/`、`deploy/compose.yaml` | 拉起 chrome、持 token、`/gw` 代理、`/mcp` HTTP MCP、健康/退出语义 | 无状态；不做 ledger/viewer/CDP |
 | 契约 | K-Gateway（`sumeru/browser/gateway/sumeru_gateway.cc`） | 浏览器唯一对外操作通道 | 不做空间/所有权/lease/事件流 |
 | 权威 | Chromium 自身 | TabStripModel、NavigationController、Profile、窗口树 | 无第二状态副本 |
 
@@ -95,7 +96,7 @@ tini (PID 1, bin/start-all.sh)
 | AX 快照 | `sumeru/browser/snapshot/snapshot_serializer.cc` |
 | 页面截图 | `content/browser/renderer_host/sumeru_page_capture.cc` |
 | shim 启动/代理/健康 | `src/index.mjs`、`src/runtime.mjs`、`src/startup.mjs` |
-| CLI / MCP | `bin/sumeru.mjs`、`bin/sumeru-mcp.mjs` |
+| CLI / MCP | `bin/sumeru.mjs`、`POST /mcp`（Streamable HTTP） |
 | 容器启动/IME | `bin/start-all.sh`、`bin/start-novnc.sh` |
 | 镜像 | `Dockerfile.runtime` |
 

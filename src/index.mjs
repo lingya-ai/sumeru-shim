@@ -85,9 +85,14 @@ export function attachExitSemantics(
 }
 
 /** 读请求体并解析 JSON（空体 = undefined）。 */
-export async function readJsonBody(req) {
+export async function readJsonBody(req, limitBytes = 32 * 1024 * 1024) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > limitBytes) return { ok: false, tooLarge: true };
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw.trim()) return { ok: true, body: undefined };
   try {
@@ -127,20 +132,46 @@ export async function start({
   const runtime = createRuntime({ config, gateway });
 
   const server = createServerFn(async (req, res) => {
-    const { ok, body } = await readJsonBody(req);
+    const path = (req.url ?? "/").split("?")[0];
+    const { ok, body, tooLarge } = await readJsonBody(req);
+    if (tooLarge) {
+      res.writeHead(413, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ ok: false, error: { code: "SUMERU_PAYLOAD_TOO_LARGE", message: "body too large" } }),
+      );
+      return;
+    }
     if (!ok) {
+      if (path === "/mcp") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: "Parse error" },
+          }),
+        );
+        return;
+      }
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: { code: "SUMERU_INVALID_ARGUMENT", message: "invalid json" } }));
       return;
     }
     const outcome = await runtime.handleRequest({
       method: req.method ?? "GET",
-      path: (req.url ?? "/").split("?")[0],
+      path,
       body,
       headers: req.headers,
     });
-    res.writeHead(outcome.status, { "content-type": "application/json" });
-    res.end(JSON.stringify(outcome.body));
+    res.writeHead(outcome.status, {
+      "content-type": "application/json",
+      ...(outcome.headers ?? {}),
+    });
+    if (outcome.empty) {
+      res.end();
+      return;
+    }
+    res.end(JSON.stringify(outcome.body ?? {}));
   });
 
   // 先起 HTTP（/healthz 在启动过程中就能回答分层状态，便于定位），再等内核就绪。

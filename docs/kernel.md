@@ -42,13 +42,28 @@ Chromium 全量源码约 25 GB（含 `.git`），不适合放进 git。仓库维
 先按版本下载源码（放在 gitignored 的 `chromium-src/<version>/src`）：
 
 ```bash
-chromium/scripts/fetch-kernel-source.sh
-# 或指定版本
-chromium/scripts/fetch-kernel-source.sh --version 156.0.8078.74
+# 推荐：浅层源码（不拉完整历史）
+chromium/scripts/fetch-kernel-source.sh --shallow
+# 指定版本
+chromium/scripts/fetch-kernel-source.sh --version 156.0.8078.74 --shallow
+# 需要更多历史 / 控制并发 / 跳过 hooks
+chromium/scripts/fetch-kernel-source.sh --shallow --depth 20 --jobs 1 --no-hooks
 ```
+
+默认是完整历史；`--shallow` 使用 `git clone --depth` + `gclient sync --no-history`。
+代理默认不使用，需要时显式加 `--proxy` 或设置 `SUMERU_PROXY`。
 
 脚本会准备 `depot_tools`、gclient 配置、checkout tag 并同步依赖；完成后输出
 `SUMERU_SRC=.../chromium-src/156.0.8078.74/src`。
+
+代理默认**不使用**：不传 `--proxy` 且未设置 `SUMERU_PROXY` 时，脚本会清除继承的
+`*_proxy` 变量并覆盖 git 全局代理。需要代理时显式传入：
+
+```bash
+chromium/scripts/fetch-kernel-source.sh --proxy http://127.0.0.1:7890
+# 或
+SUMERU_PROXY=http://127.0.0.1:7890 chromium/scripts/fetch-kernel-source.sh
+```
 
 本地/内网构建机执行（构建脚本由维护者本地维护，**不提交到仓库**）。
 以下为等价手动步骤：

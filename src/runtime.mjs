@@ -1,21 +1,19 @@
 /**
  * 薄网关代理运行时（gateway-only，纯函数可单测）。
  *
- * 职责只剩两件事：
+ * 职责：
  * 1. `loadConfig`：chrome 启动参数（**无 CDP**）+ gateway UDS 位置 + HTTP 端口；
- * 2. `createRuntime`：`GET /healthz`（8 层分级健康）+ `POST /gw`（gateway 方法代理）。
+ * 2. `createRuntime`：`GET /healthz` + `POST /gw` + `POST /mcp`。
  *
- * HTTP 面（收窄后只有两条路由；其余一律 404）：
- * - `GET  /healthz`  分层健康。`ready` 仍表示「shim 自己的启动步骤完成」，
- *                    环境探针只进 `layers`，不折叠进 `ready`。
- * - `POST /gw`       `{method, params}` → `gateway.request(method, params)`，
- *                    结果/错误码/错误信息原样回传（代理不翻译、不改写）。
- *
- * 随收缩删除的路由：`/round` `/reconcile` `/checkpoint` `/visual` `/heartbeat`
- * （多空间/轮次/转世/视觉镜像全系退役，见架构文档）。
+ * HTTP 面：
+ * - `GET  /healthz`  分层健康。
+ * - `POST /gw`       `{method, params}` → `gateway.request(...)`，原样回传。
+ * - `POST /mcp`      MCP Streamable HTTP（无状态 JSON-only，2025-06-18）。
+ *                    本版本暂不鉴权；只应绑定回环/内网。
  */
 
 import fs from "node:fs";
+import { handleMcpRequest } from "./mcp/core.mjs";
 
 /** `/healthz.layers` 的固定 8 层（顺序即契约，测试按此断言）。 */
 export const HEALTH_LAYERS = [
@@ -266,6 +264,26 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
     if (method === "GET" && path === "/healthz") {
       const state = healthz();
       return { status: state.ready ? 200 : 503, body: state };
+    }
+    if (path === "/mcp") {
+      if (method !== "POST") {
+        return {
+          status: 405,
+          headers: { allow: "POST" },
+          body: {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32600, message: "MCP endpoint accepts POST only" },
+          },
+        };
+      }
+      // v2.1.x HTTP MCP is intentionally unauthenticated for first-version
+      // validation; bind the shim to loopback/private network only.
+      const response = await handleMcpRequest(body, (m, p) => gateway.request(m, p));
+      if (response === null) {
+        return { status: 202, empty: true, body: null };
+      }
+      return { status: 200, body: response };
     }
     if (path === "/gw") {
       if (method !== "POST") return noRoute(method, path);

@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git python3 curl ca-certificates lsb-release sudo xz-utils zstd \
       python3-pkg-resources python3-setuptools file binutils \
       pkg-config build-essential python3-dev \
-      libglib2.0-dev libgtk-3-dev libatk1.0-dev libasound2-dev \
+      libglib2.0-dev libgtk-3-dev libatk1.0-dev libasound2-dev libdbus-1-dev \
       libx11-dev libxext-dev libxfixes-dev libxcomposite-dev libxrandr-dev \
       libxdamage-dev libdrm-dev libgbm-dev libnss3-dev libnspr4-dev \
       libcups2-dev libpango1.0-dev libcairo2-dev \

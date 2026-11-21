@@ -80,14 +80,13 @@ node bin/sumeru.mjs ime active "中文"
 node bin/sumeru.mjs close <targetId>
 ```
 
-MCP（stdio）：
+MCP（Streamable HTTP，无状态 JSON，协议 `2025-06-18`）：
 
-```json
-{
-  "command": "node",
-  "args": ["<repo>/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080"]
-}
+```text
+POST http://127.0.0.1:8080/mcp
 ```
+
+当前 `/mcp` 暂不鉴权，只应绑定回环/内网。
 
 ## 6. 调试 shim
 

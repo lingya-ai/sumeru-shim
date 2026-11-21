@@ -64,8 +64,8 @@ node scripts/version.mjs --tag v2.1.0
 | `build-info.artifact.sha256` | kernel tar.gz（归档/备份） |
 | `build-info.kernelImage` | 私有 OCI registry 的内核镜像名 |
 | `build-info.kernelTag` | 内核镜像 tag：`<chromium>-<kernelCommit>` |
-| `bin/sumeru-mcp.mjs` 的 `protocolVersion` | MCP 传输协议（`2024-11-05`） |
-| MCP `serverInfo.version` | 工具 schema 版本（当前 `0.2.0`） |
+| `src/mcp/core.mjs` 的 `PROTOCOL_VERSION` | MCP 传输协议（`2025-06-18`） |
+| MCP `serverInfo.version` | 工具 schema 版本（当前 `0.4.0`） |
 
 发布记录应能回答：**这个镜像里的 chrome 是哪个 SHA、由哪个 kernel commit 构建、
 对应哪个 kernel image digest。**
@@ -146,7 +146,8 @@ node scripts/version.mjs --tag v2.1.0
 - 镜像名：`registry.ops.lingya.tech/sumeru/sumeru-kernel`
 - tag：`<chromiumVersion>-<kernelCommit>`，例如 `156.0.8078.74-87e334d`
 - 内容：`/opt/sumeru/` 下的 `chrome`、`icudtl.dat`、`.pak`、`locales/`、GPU 库等；
-- **必须包含 `LICENSES.chromium.html`**；本地 publish 脚本和 runtime workflow 都会硬校验；
+- **必须包含 `LICENSES.chromium.html`**；本地 publish 脚本硬校验；runtime workflow
+  在 v2.1.0 首版验证期只 warning，正式发布前恢复硬校验；
 - 私有仓库；运行时 workflow 通过 `docker cp` 取出 `/opt/sumeru`，不使用签名 URL。
 
 ### 内核本地构建/发布

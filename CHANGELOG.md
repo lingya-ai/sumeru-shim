@@ -10,8 +10,14 @@ Keep a Changelog; versions follow Semantic Versioning.
 - Community Edition licensing: PolyForm Noncommercial 1.0.0 + commercial license.
 - `LICENSE-COMMERCIAL.md`, `CLA.md`, `CONTRIBUTING.md`, `TRADEMARK.md`.
 - MCP agent skill at `.dsh/skills/sumeru-browser/` (tools, recipes, troubleshooting).
+- MCP `capture_page` now returns an MCP **image content block**
+  (`{type:"image",data,mimeType:"image/png"}`) instead of base64 inside text JSON.
+- MCP **Streamable HTTP** endpoint `POST /mcp` (protocol `2025-06-18`, stateless
+  JSON-only) served by the shim; clients no longer need Node. HTTP is the only
+  supported MCP transport. MCP server schema version is `0.4.0`.
 - `chromium/scripts/fetch-kernel-source.sh`: per-version Chromium source cache under
-  gitignored `chromium-src/<version>/src`.
+  gitignored `chromium-src/<version>/src`; `--shallow` / `--depth` /
+  `--no-history` avoid the full 70 GB git history.
 - Local-only kernel publish flow (script not committed) publishes immutable
   kernel images to the private registry `registry.ops.lingya.tech`; `release-image`
   consumes them instead of a signed artifact URL. Chromium is never built on GitHub.

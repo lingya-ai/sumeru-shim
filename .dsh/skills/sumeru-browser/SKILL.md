@@ -19,18 +19,18 @@ control surface.
 
 ## Prerequisites
 
-The MCP server is the repository's `bin/sumeru-mcp.mjs` (stdio JSON-RPC):
+The recommended MCP endpoint is the shim's **Streamable HTTP** endpoint:
 
 ```json
 {
-  "command": "node",
-  "args": ["<repo>/bin/sumeru-mcp.mjs", "--gate", "http://127.0.0.1:8080"],
-  "env": { "SUMERU_API_KEY": "<optional key>" }
+  "type": "http",
+  "url": "http://127.0.0.1:8080/mcp"
 }
 ```
 
-- `--gate` or `SUMERU_GATE_URL`: shim base URL (default `http://127.0.0.1:8080`).
-- `--key` or `SUMERU_API_KEY`: sent as `X-Sumeru-Token` when the gateway requires auth.
+Protocol `2025-06-18`, stateless JSON-only. No Node client is required.
+This version's `/mcp` is unauthenticated; use it only on loopback/private networks.
+
 - Start with `ping`; if it fails, check `/healthz` and the container, not a CDP port.
 
 ## Core workflow
@@ -56,7 +56,7 @@ a stale `targetId` is the most common failure.
 | `activate_tab` | bring a tab to the foreground |
 | `navigate_target` | navigate and wait for page load |
 | `evaluate_target` | run JS in the page main frame; returns a JSON value |
-| `capture_page` | PNG screenshot (page only); base64 + byte count |
+| `capture_page` | PNG screenshot (page only); MCP image content |
 | `snapshot_ax` | flattened accessibility tree text with refs |
 | `dispatch_key` | trusted keyboard event |
 | `dispatch_mouse` | trusted mouse event |
@@ -140,8 +140,13 @@ cleanly with the last state.
 capture_page {targetId}
 ```
 
-The MCP result text is JSON containing `pngBase64` and `bytes`; decode base64 to
-write a PNG. The call activates a background tab first.
+The MCP result is an **image content block**:
+
+```json
+{ "type": "image", "data": "<base64 PNG>", "mimeType": "image/png" }
+```
+
+Decode `data` to write a PNG. The call activates a background tab first.
 
 More: [references/recipes.md](references/recipes.md).
 
