@@ -2,10 +2,11 @@
 
 ## 当前状态
 
+- **v2.2.0（当前）**：在 2.1.0 基础上加入 MCP/VNC 可配置认证、TigerVNC Xvnc
+  （Unicode 剪贴板）与 fcitx5 默认启用并在启动时激活（中文输入）。
 - **v2.0.0（BSD-3-Clause）已撤回**：GitHub/Gitee 的 Release 与 tag 已删除。
   已经下载或 fork 的副本仍受 BSD-3 授权；该授权无法追溯撤销。
-- **v2.1.0 尚未发布**：正在切换为 PolyForm Noncommercial
-  1.0.0 + 商业许可模式。
+- v2.1.0 未单独对外发布，内容已包含在 2.2.0 中。
 
 ## 许可
 
@@ -33,8 +34,8 @@ npm run setup -- --from ./sumeru-kernel-*.tar.gz
 
 | 指标 | 值 |
 |---|---|
-| 单测 | 70 pass / 1 skip |
-| smoke | 10/10 |
+| 单测 | 97 pass / 1 skip |
+| smoke | 15/15（含认证矩阵） |
 | m-series | 12/12 |
 | 1000 次顺序求值 | avg 3.3 ms，worst 19 ms |
 | m09（关标签 + 在途求值） | 6/6 |

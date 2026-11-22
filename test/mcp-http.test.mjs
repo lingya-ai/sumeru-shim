@@ -55,7 +55,7 @@ test("HTTP MCP：initialize 使用 2025-06-18，只声明 tools", async () => {
   assert.equal(out.status, 200);
   assert.equal(out.body.result.protocolVersion, "2025-06-18");
   assert.deepEqual(out.body.result.capabilities, { tools: {} });
-  assert.equal(out.body.result.serverInfo.version, "0.4.0");
+  assert.equal(out.body.result.serverInfo.version, "0.5.0");
 });
 
 test("HTTP MCP：tools/list 返回 12 个工具", async () => {
