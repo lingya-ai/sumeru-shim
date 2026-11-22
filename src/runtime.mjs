@@ -2,17 +2,24 @@
  * 薄网关代理运行时（gateway-only，纯函数可单测）。
  *
  * 职责：
- * 1. `loadConfig`：chrome 启动参数（**无 CDP**）+ gateway UDS 位置 + HTTP 端口；
+ * 1. `loadConfig`：chrome 启动参数（**无 CDP**）+ gateway UDS 位置 + HTTP 端口 + 认证配置；
  * 2. `createRuntime`：`GET /healthz` + `POST /gw` + `POST /mcp`。
  *
  * HTTP 面：
- * - `GET  /healthz`  分层健康。
+ * - `GET  /healthz`  分层健康（探针免认证，只多报 `auth` 姿态）。
  * - `POST /gw`       `{method, params}` → `gateway.request(...)`，原样回传。
  * - `POST /mcp`      MCP Streamable HTTP（无状态 JSON-only，2025-06-18）。
- *                    本版本暂不鉴权；只应绑定回环/内网。
+ *                    凭据与 `/gw` 共用（docs/auth.md），401 走 HTTP 语义。
  */
 
 import fs from "node:fs";
+import {
+  OPEN_AUTH,
+  challengeHeaders,
+  describeAuth,
+  loadAuthConfig,
+  verifyCredential,
+} from "./auth.mjs";
 import { handleMcpRequest } from "./mcp/core.mjs";
 
 /** `/healthz.layers` 的固定 8 层（顺序即契约，测试按此断言）。 */
@@ -56,8 +63,9 @@ export function loadConfig(env = process.env) {
     // 启动就绪探针：轮询 gateway ping（现行内核无 listTabs —— ready == ping 通）。
     readyTimeoutMs: Number(env.SUMERU_READY_TIMEOUT_MS ?? 60_000),
     readyPollMs: Number(env.SUMERU_READY_POLL_MS ?? 250),
-    // 可选：设置后 `/gw` 要求 `X-Sumeru-Token` 头（`/healthz` 保持开放给探针）。
-    apiKey: env.SUMERU_API_KEY ?? "",
+    // 可选：设置后 `/gw` 与 `/mcp` 都要求凭据（`/healthz` 保持开放给探针）。
+    // 凭据只在内存里以 digest 形式存在，见 docs/auth.md 与 src/auth.mjs。
+    auth: loadAuthConfig(env),
     // 分层健康的环境坐标（端口/显示号只用于探测，不改变行为）。
     display: env.SUMERU_DISPLAY ?? "99",
     novncPort: Number(env.SUMERU_NOVNC_PORT ?? 6901),
@@ -67,7 +75,7 @@ export function loadConfig(env = process.env) {
       // 呈现层：noVNC 看的就是这个原生窗口。SUMERU_HEADLESS=0 时走 X11（DISPLAY=:99），
       // 否则退化为 headless（仅本地调试/单测用；产品形态是原生窗口，D2）。
       ...(env.SUMERU_HEADLESS === "0" ? [] : ["--headless=new"]),
-      // 无 WM 的 Xvfb 下必须显式给几何（）。
+      // 无 WM 的 Xvnc 下必须显式给几何（）。
       // 窗口尺寸默认跟随 SUMERU_SCREEN（WxH[xD]）；窗口比屏幕大会被裁，比屏幕小
       // 会在 noVNC 里留出一圈黑边，所以两者共用一个来源。
       "--window-position=0,0",
@@ -149,6 +157,22 @@ export function createFsProbes() {
 }
 
 /**
+ * 解析认证状态：优先 `config.auth`（`loadConfig()` 产出，内存里只有 digest）。
+ *
+ * 旧形态 `config.apiKey` 已移除：非空时直接报错而不是静默放行，避免
+ * "传了 key 但认证没生效"的安全回归。空串按未配置处理（手工构造 config 的测试）。
+ */
+function resolveAuth(config) {
+  if (config.auth && typeof config.auth === "object") return config.auth;
+  if (typeof config.apiKey === "string" && config.apiKey !== "") {
+    throw new TypeError(
+      "createRuntime: config.apiKey is no longer supported; pass config.auth (loadAuthConfig)",
+    );
+  }
+  return OPEN_AUTH;
+}
+
+/**
  * 装配薄代理运行时。
  *
  * @param {object} options
@@ -156,12 +180,19 @@ export function createFsProbes() {
  * @param {{request: Function, isConnected?: Function}} options.gateway gateway 客户端
  * @param {object} [options.probes] 环境探针（`createFsProbes()`，测试可注入）
  */
-export function createRuntime({ config, gateway, probes, now = () => Date.now() } = {}) {
+export function createRuntime({
+  config,
+  gateway,
+  probes,
+  now = () => Date.now(),
+  log = () => {},
+} = {}) {
   if (!config) throw new TypeError("createRuntime requires config");
   if (!gateway || typeof gateway.request !== "function") {
     throw new TypeError("createRuntime requires gateway with request()");
   }
   const probe = probes ?? createFsProbes();
+  const auth = resolveAuth(config);
 
   let ready = false;
   let windowReady = false;
@@ -173,12 +204,12 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
 
   /**
    * 8 层分级健康（gateway）：任何一层挂掉都不得冒充其他层健康。
-   * - x / synth：X11 socket（无独立合成器，Xvfb 自己合成，两者同源）
+   * - x / synth：X11 socket（无独立合成器，X server 自己合成，两者同源）
    * - webui：noVNC 的 websockify 监听端口
    * - gateway：UDS socket 文件存在
    * - kernel：gateway 连接存活（ping 通道在）
    * - window：X 显示 + shim 已过就绪探针（无 WM，窗口随 X 存在）
-   * - vnc：x11vnc 监听端口
+   * - vnc：VNC 服务端（TigerVNC Xvnc）监听端口
    * - ime：**不探进程**。SUMERU_IME 未设时恒 true 并标注 `ime:not-configured`；
    *        设了则由 start-all.sh 的 fail-fast 保证二进制存在，shim 侧如实体检。
    */
@@ -200,6 +231,7 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
       ready,
       layers,
       notes,
+      auth: describeAuth(auth),
       gateway: {
         socket: config.gatewaySocket,
         connected: layers.kernel,
@@ -208,11 +240,45 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
     };
   }
 
-  function authorized(headers) {
-    if (!config.apiKey) return true;
-    let given = headers?.["x-sumeru-token"] ?? headers?.["X-Sumeru-Token"];
-    if (Array.isArray(given)) given = given[0];
-    return typeof given === "string" && given === config.apiKey;
+  /**
+   * 凭据被拒时只记"哪个面 + 原因 + 指纹"：可用来对配置漂移，但不可反推 token。
+   *
+   * @param {"gw"|"mcp"} surface
+   * @param {{reason?: string, fingerprint?: string}} check
+   */
+  function noteAuthFailure(surface, check) {
+    log(
+      `auth rejected: surface=${surface} reason=${check.reason ?? "invalid"} fingerprint=${check.fingerprint ?? "-"}`,
+    );
+  }
+
+  /** `/gw` 的 401：保持既有 `{ok:false,error:{code,...}}` 形状，只加挑战头。 */
+  function unauthorizedGateway(reason) {
+    return {
+      status: 401,
+      headers: challengeHeaders(auth, {
+        error: reason === "invalid" ? "invalid_token" : "",
+      }),
+      body: {
+        ok: false,
+        error: { code: "SUMERU_UNAUTHORIZED", message: "missing or invalid token" },
+      },
+    };
+  }
+
+  /**
+   * `/mcp` 的 401：认证失败是**传输层**语义（RFC 6750），不是 JSON-RPC error——
+   * 客户端靠 HTTP 状态码与 `WWW-Authenticate` 触发凭据流程。
+   */
+  function unauthorizedMcp(reason) {
+    const invalid = reason === "invalid";
+    return {
+      status: 401,
+      headers: challengeHeaders(auth, { error: invalid ? "invalid_token" : "" }),
+      body: invalid
+        ? { error: "invalid_token", error_description: "token rejected" }
+        : { error: "unauthorized", error_description: "missing bearer token" },
+    };
   }
 
   function invalidArgument(message) {
@@ -266,6 +332,14 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
       return { status: state.ready ? 200 : 503, body: state };
     }
     if (path === "/mcp") {
+      // 鉴权先于方法分发：未认证的 GET/OPTIONS 也返回 401，而不是暴露方法策略。
+      if (auth.enforceMcp) {
+        const check = verifyCredential(headers, auth);
+        if (!check.ok) {
+          noteAuthFailure("mcp", check);
+          return unauthorizedMcp(check.reason);
+        }
+      }
       if (method !== "POST") {
         return {
           status: 405,
@@ -277,8 +351,6 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
           },
         };
       }
-      // v2.1.x HTTP MCP is intentionally unauthenticated for first-version
-      // validation; bind the shim to loopback/private network only.
       const response = await handleMcpRequest(body, (m, p) => gateway.request(m, p));
       if (response === null) {
         return { status: 202, empty: true, body: null };
@@ -287,14 +359,12 @@ export function createRuntime({ config, gateway, probes, now = () => Date.now() 
     }
     if (path === "/gw") {
       if (method !== "POST") return noRoute(method, path);
-      if (!authorized(headers)) {
-        return {
-          status: 401,
-          body: {
-            ok: false,
-            error: { code: "SUMERU_UNAUTHORIZED", message: "missing or invalid X-Sumeru-Token" },
-          },
-        };
+      if (auth.enforceGateway) {
+        const check = verifyCredential(headers, auth);
+        if (!check.ok) {
+          noteAuthFailure("gw", check);
+          return unauthorizedGateway(check.reason);
+        }
       }
       return proxyGatewayCall(body);
     }

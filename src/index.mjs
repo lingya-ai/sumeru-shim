@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
+import { deleteAuthEnv, describeAuth, sanitizeChildEnv } from "./auth.mjs";
 import { createGatewayClient } from "./ipc/gateway-client.mjs";
 import { clearStaleProfileLock } from "./profile-lock.mjs";
 import { createRuntime, loadConfig } from "./runtime.mjs";
@@ -122,6 +123,25 @@ export async function start({
   const config = loadConfig(env);
   let shuttingDown = false;
 
+  // 凭据只留在内存：loadConfig 已把 key 收敛成 sha256 digest，这里立刻抹掉进程环境
+  // 里的明文，避免 chrome 及其渲染进程通过 /proc/<pid>/environ 继承（docs/auth.md）。
+  // 只抹 `process.env`（生产路径）：调用方显式传入的 env 对象不替它做决定，
+  // 子进程那一侧由 sanitizeChildEnv 兜底。
+  const clearedAuthEnv = env === process.env ? deleteAuthEnv(env) : [];
+  if (clearedAuthEnv.length > 0) {
+    log(`auth env dropped from shim environment: ${clearedAuthEnv.join(", ")}`);
+  }
+  const posture = describeAuth(config.auth);
+  log(
+    `auth: /gw=${posture.gw} /mcp=${posture.mcp} (mcp_mode=${posture.mcpMode}, source=${config.auth.source})`,
+  );
+  for (const warning of config.auth.warnings) log(`auth warning: ${warning}`);
+  if (!config.auth.enforceGateway || !config.auth.enforceMcp) {
+    log(
+      "auth warning: HTTP surface is not fully authenticated; bind the shim to loopback/private network or set SUMERU_API_KEY",
+    );
+  }
+
   // 唯一操作面：gateway UDS 客户端（token 由 shim 持有，不落 HTTP 面以外的位置）。
   const gateway = gatewayFactory({
     socketPath: config.gatewaySocket,
@@ -129,7 +149,7 @@ export async function start({
     timeoutMs: config.gatewayTimeoutMs,
   });
 
-  const runtime = createRuntime({ config, gateway });
+  const runtime = createRuntime({ config, gateway, log });
 
   const server = createServerFn(async (req, res) => {
     const path = (req.url ?? "/").split("?")[0];
@@ -187,7 +207,7 @@ export async function start({
   });
   if (removedLocks.length > 0) log(`profile locks cleared: ${removedLocks.length}`);
 
-  const child = spawnChrome({ config, spawnFn, env });
+  const child = spawnChrome({ config, spawnFn, env: sanitizeChildEnv(env) });
   attachExitSemantics(child, { exit, isShuttingDown: () => shuttingDown });
   log(`chrome spawned: ${config.chromePath} (no CDP flags)`);
 
@@ -258,7 +278,9 @@ const isDirect =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirect) {
   start().catch((error) => {
-    console.error("[shim] failed to start:", error);
+    // 配置错误（如 SUMERU_AUTH_CONFIG）要把 code 打出来，否则排障只能看到一句话。
+    const code = error?.code ? `[${error.code}] ` : "";
+    console.error(`[shim] failed to start: ${code}${error?.message ?? error}`);
     process.exit(1);
   });
 }

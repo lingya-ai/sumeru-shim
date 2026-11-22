@@ -16,7 +16,11 @@ test("loadConfig：默认端口 / gateway UDS / token / 超时", () => {
   // 就绪探针：60s 上限、250ms 间隔（gateway §5 H1「最多 60s」）
   assert.equal(config.readyTimeoutMs, 60_000);
   assert.equal(config.readyPollMs, 250);
-  assert.equal(config.apiKey, "");
+  // 认证状态只在内存（digest），config 上不再保留 api key 明文
+  assert.equal(config.auth.configured, false);
+  assert.equal(config.auth.enforceGateway, false);
+  assert.equal(config.auth.digest, null);
+  assert.equal("apiKey" in config, false);
   assert.equal(config.ime, "");
 });
 
@@ -54,7 +58,7 @@ test("loadConfig：SUMERU_HEADLESS=0 走 X11 原生窗口；默认 headless 仅�
   assert.ok(!native.includes("--headless=new"));
 });
 
-test("loadConfig：env 覆盖（端口 / chrome 路径 / socket / token / api key / 显示与端口）", () => {
+test("loadConfig：env 覆盖（端口 / chrome 路径 / socket / token / 认证 / 显示与端口）", () => {
   const config = loadConfig({
     SHIM_PORT: "9090",
     SUMERU_CHROME_PATH: "/opt/sumeru/chrome",
@@ -76,7 +80,12 @@ test("loadConfig：env 覆盖（端口 / chrome 路径 / socket / token / api ke
   assert.equal(config.gatewayTimeoutMs, 3000);
   assert.equal(config.readyTimeoutMs, 1000);
   assert.equal(config.readyPollMs, 25);
-  assert.equal(config.apiKey, "sk-test");
+  // 认证：key → digest 进内存；config 本身不带明文
+  assert.equal(config.auth.source, "env");
+  assert.equal(config.auth.enforceGateway, true);
+  assert.equal(config.auth.enforceMcp, true);
+  assert.equal(config.auth.digest.length, 32);
+  assert.equal("apiKey" in config, false);
   assert.equal(config.display, "98");
   assert.equal(config.novncPort, 7001);
   assert.equal(config.vncPort, 5901);

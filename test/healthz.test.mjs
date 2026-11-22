@@ -69,7 +69,7 @@ test("/healthz：x 与 synth 同源（无独立合成器，Xvfb 自己合成）"
   assert.equal(down.layers.window, false);
 });
 
-test("/healthz：webui/vnc 用 noVNC 与 x11vnc 端口探测；gateway 用 UDS 路径", async () => {
+test("/healthz：webui/vnc 用 noVNC 与 VNC 端口探测；gateway 用 UDS 路径", async () => {
   const { runtime, probe } = harness({
     env: { SUMERU_NOVNC_PORT: "7001", SUMERU_VNC_PORT: "5901", SUMERU_GATEWAY_SOCKET: "/tmp/gw.sock" },
     probeOverrides: { tcp: { 7001: true, 5901: false }, socket: true },
