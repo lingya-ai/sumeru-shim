@@ -3,7 +3,7 @@
  * Local cleanup helper ().
  *
  *   node scripts/clean.mjs                 # print usage
- *   node scripts/clean.mjs --logs          # remove root *.log
+ *   node scripts/clean.mjs --logs          # remove logs/ (and stray root *.log)
  *   node scripts/clean.mjs --build         # remove build/
  *   node scripts/clean.mjs --all           # build/ + logs + node_modules + tmp-*
  */
@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const LOGS = join(ROOT, "logs");
 const flags = new Set(process.argv.slice(2));
 
 function remove(path) {
@@ -22,6 +23,9 @@ function remove(path) {
 }
 
 function removeLogs() {
+  // Local logs live in logs/ (gitignored, see AGENTS.md).
+  remove(LOGS);
+  // Legacy: logs used to be written straight into the repo root.
   for (const name of readdirSync(ROOT)) {
     if (name.endsWith(".log") && statSync(join(ROOT, name)).isFile()) {
       remove(join(ROOT, name));

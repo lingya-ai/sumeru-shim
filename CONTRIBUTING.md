@@ -19,6 +19,7 @@ pull request.
 - Keep commits focused; describe the user-visible effect.
 - Do not add dependencies without discussion.
 - Do not commit `build/`, `dist/`, browser profiles, cookies, tokens or logs.
+  Write local logs to the gitignored `logs/` directory.
 
 ## Security
 

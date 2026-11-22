@@ -5,7 +5,9 @@ node_modules/
 /out/
 /coverage/
 /.nyc_output/
+# 本地日志：统一写 logs/（见 AGENTS.md「Logs」），*.log 兜底
 *.log
+/logs/
 tmp-*/
 .env
 local.settings.json
