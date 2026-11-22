@@ -22,6 +22,10 @@ mkdir -p "$OUT"
 
 cp "$CHROME" "$STAGE/chrome"
 strip --strip-unneeded "$STAGE/chrome" 2>/dev/null || true
+if [ -f "$BUILT/chrome_sandbox.stripped" ]; then
+  cp "$BUILT/chrome_sandbox.stripped" "$STAGE/chrome-sandbox"
+  chmod 4755 "$STAGE/chrome-sandbox"
+fi
 for f in chrome_100_percent.pak chrome_200_percent.pak chrome_crashpad_handler \
          chrome-sandbox icudtl.dat libEGL.so libGLESv2.so libvk_swiftshader.so \
          libvulkan.so.1 resources.pak snapshot_blob.bin v8_context_snapshot.bin; do

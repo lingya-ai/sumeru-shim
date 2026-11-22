@@ -50,6 +50,19 @@ log "gn gen $OUT"
 
 log "ninja chrome (first build 4-8h)"
 "$NINJA" -C "$OUT" chrome
+"$NINJA" -C "$OUT" chrome_sandbox strip_chrome_sandbox
+
+# Chromium 156 has no GN target literally named LICENSES.chromium.html.
+# The GN target is components/resources:about_credits, which writes
+# gen/components/resources/about_credits.html. Distribution packaging renames
+# that file to LICENSES.chromium.html.
+log "generating third-party license"
+"$NINJA" -C "$OUT" about_credits
+CREDITS="$OUT/gen/components/resources/about_credits.html"
+[ -s "$CREDITS" ] || { log "missing generated credits: $CREDITS"; exit 6; }
+cp "$CREDITS" "$OUT/LICENSES.chromium.html"
+[ -s "$OUT/LICENSES.chromium.html" ] || { log "missing $OUT/LICENSES.chromium.html"; exit 6; }
+log "wrote $OUT/LICENSES.chromium.html"
 
 log "done: $OUT/chrome"
 "$OUT/chrome" --version || true
