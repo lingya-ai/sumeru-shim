@@ -21,7 +21,7 @@
  *   node bin/sumeru.mjs close  <target>
  *
  * Env: SUMERU_GATE_URL (default http://127.0.0.1:8080), SUMERU_API_KEY (sent as
- * X-Sumeru-Token when set).
+ * X-Sumeru-Token when set; the shim accepts it or Authorization: Bearer).
  */
 import { writeFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -122,7 +122,8 @@ node bin/sumeru.mjs shot active .\\page.png
 
 - \`SUMERU_GATE_URL\`：默认 \`http://127.0.0.1:8080\`（容器内）；从宿主连容器时改成映射端口，
   例如 \`http://127.0.0.1:18880\`。
-- \`SUMERU_API_KEY\`：设了就作为 \`X-Sumeru-Token\` 头发送（shim 侧 \`SUMERU_API_KEY\` 开启校验）。
+- \`SUMERU_API_KEY\`：设了就作为 \`X-Sumeru-Token\` 头发送（shim 侧 \`SUMERU_API_KEY\`
+  开启校验，/gw 与 /mcp 共用；也接受 \`Authorization: Bearer\`）。
 
 [sumeru:skill] end of guide`;
 

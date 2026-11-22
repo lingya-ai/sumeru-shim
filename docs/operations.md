@@ -32,10 +32,16 @@ docker run -d --name sumeru \
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `SUMERU_SCREEN` | `1280x800x24` | Xvfb 分辨率，同时决定 chrome 窗口尺寸 |
-| `SUMERU_IME` | 空 | `fcitx` 启用中文输入；镜像缺 fcitx5 时 fail-fast |
+| `SUMERU_SCREEN` | `1280x800x24` | Xvnc 分辨率/深度，同时决定 chrome 窗口尺寸（改分辨率需重建容器） |
+| `SUMERU_IME` | `fcitx`（compose 默认） | 启动 fcitx5 中文输入法；`off`/空则不起（noVNC 中文需要它）；镜像缺 fcitx5 时 fail-fast |
 | `SUMERU_KEEP_LAST_TAB` | `1` | 最后一个标签保护；`0` 关闭（测试用） |
-| `SUMERU_API_KEY` | 空 | 设置后 `/gw` 要求 `X-Sumeru-Token`；对外暴露时必设 |
+| `SUMERU_API_KEY` | 空 | 唯一共享凭据；设置后 `/gw` 与 `/mcp` 都要 `Authorization: Bearer` 或 `X-Sumeru-Token`；对外暴露时必设 |
+| `SUMERU_API_KEY_FILE` | 空 | 从 secret 文件读取同一凭据（优先于 env）；推荐 Docker/K8s secret |
+| `SUMERU_MCP_AUTH` | `auto` | `auto`=有 key 就强制 `/mcp`；`required`=强制且无 key 拒绝启动；`off`=只放开 `/mcp`（迁移用） |
+| `SUMERU_VNC_AUTH` | `none` | `vnc`=TigerVNC RFB 口令；`none`=无口令（配合 `-localhost` 只允许容器内） |
+| `SUMERU_VNC_PASSWORD` | 空 | RFB 口令，**1–8 字节**，推荐恰好 8 位随机字母数字；`vnc` 模式下缺失即启动失败 |
+| `SUMERU_VNC_PASSWORD_FILE` | 空 | 从文件读取口令（优先于 env）；读取失败即启动失败 |
+| `SUMERU_VNC_LOCALHOST` | `1` | `1`=5900 只绑容器内回环；`0`=允许外部直连（须同时开认证） |
 | `SUMERU_GATEWAY_TOKEN` | 启动时随机 | shim/chrome 内部 UDS token；`start-all.sh` 生成，不对外 |
 | `SUMERU_GATEWAY_SOCKET` | `/data/sumeru-gateway.sock` | UDS 路径 |
 | `SUMERU_GATEWAY_TIMEOUT_MS` | `15000` | shim 侧 gateway 请求超时 |
@@ -47,6 +53,13 @@ docker run -d --name sumeru \
 
 `SUMERU_GATEWAY_TOKEN` 由 `bin/start-all.sh` 在每次启动时生成（未显式设置时），
 不需要也不应该写进 compose。
+
+凭据生命周期（详见 [auth.md](auth.md)）：`SUMERU_API_KEY` 与 VNC 口令只在启动时读入
+内存（API key 只保留 `sha256` digest），不写盘、不进日志、不落 `/data`；chrome 与
+Xvnc/websockify 的进程环境里也没有它们。但容器配置的 env 本身对同 uid 进程
+（含 `docker exec`）可见，要收窄就用 `_FILE` + secret。改配置后要让容器真正用上新值——
+secret 文件改内容后 `docker restart` 即可重读，**env 改动必须重建容器**
+（`docker compose up -d`），`docker restart` 不会带上新 env。
 
 ## 3. 健康检查
 
@@ -63,10 +76,11 @@ curl -fsS http://127.0.0.1:8080/healthz | jq
 | gateway | UDS socket 文件存在 |
 | kernel | shim 与 gateway 连接存活 |
 | window | X 可用且 shim 过了就绪探针 |
-| vnc | x11vnc 端口在听 |
+| vnc | VNC 服务端端口在听 |
 | ime | 未配置 → true + `ime:not-configured`；配置 fcitx 由启动脚本 fail-fast |
 
 `ready=true` 只表示 shim 启动步骤完成，不代表八层全绿；看 `layers`。
+顶层另有 `auth`（`gw`/`mcp` 各报 `token` 或 `open`）与 `notes`（如 `ime:not-configured`）。
 
 ## 4. 日志
 
@@ -75,6 +89,10 @@ npm run logs
 # 或
 docker logs -f sumeru
 ```
+
+本地脚本、构建和诊断命令产生的日志**文件**统一写到仓库根的 `logs/`（git
+忽略，见 `AGENTS.md`「Logs」），例如
+`mkdir -p logs && npm run smoke > logs/smoke.log 2>&1`；不要写到仓库根。
 
 关键行：
 
@@ -90,6 +108,24 @@ docker logs -f sumeru
 - 看到的是**原生 Chromium 窗口**（标签条/地址栏/菜单都在）。
 - 人类可以直接点、输入；agent 与人类共用同一浏览器。
 - 无门控、无仲裁：冲突由使用者自行判断。
+- 开了 `SUMERU_VNC_AUTH=vnc` 后，连接时 noVNC 会弹密码框；口令来自部署配置
+  （`SUMERU_VNC_PASSWORD` 或 `SUMERU_VNC_PASSWORD_FILE`），容器内没有可事后取回的副本。
+- **中文输入**：容器默认启动 fcitx5（`SUMERU_IME=fcitx`），中文由**远端**输入法上屏。
+  在 noVNC 里请先把**本地输入法关掉**，直接打拼音（如 `nihao`），再用空格/数字选候选。
+  用本地输入法组合出的中文不会被 noVNC 正确转成按键——它会以 Unicode keysym 发过去，
+  没有远端输入法时表现为一串 `?`。
+- 复制粘贴：noVNC 剪贴板面板发送文本，远端 `Ctrl+V` 粘贴；服务端是 TigerVNC Xvnc，
+  支持 Extended Clipboard，中文按 UTF-8 往返（旧 x11vnc 镜像会变成 `?`）。
+- 输入法开箱即用：新数据卷会写 `fcitx5/config` 的 `ActiveByDefault=True`，旧卷由启动脚本的
+  `fcitx5-remote -o` 兜底激活；Ctrl+Space 仍可手动切换。
+- 确认输入法状态：`docker exec sumeru ps -ef | grep fcitx5`；
+  `docker exec sumeru sh -c 'DBUS=$(tr "\0" "\n" < /proc/1/environ | grep ^DBUS_SESSION_BUS_ADDRESS= | cut -d= -f2-); DBUS_SESSION_BUS_ADDRESS="$DBUS" DISPLAY=:99 fcitx5-remote'`
+  返回 `2` 表示输入法处于激活态。
+- 默认 `SUMERU_VNC_LOCALHOST=1`：Xvnc 带 `-localhost`，5900 只在容器内可用。
+  需要原生 VNC 客户端时设 `SUMERU_VNC_LOCALHOST=0` **并**开启认证。
+- 对公网必须加 TLS 终止（noVNC ↔ websockify 是明文 WS）。
+- `/healthz` 的 `auth` 字段可以直接看当前姿态：
+  `{"auth":{"gw":"token","mcp":"token","mcpMode":"auto"}}`。
 
 ## 6. 升级与回滚
 

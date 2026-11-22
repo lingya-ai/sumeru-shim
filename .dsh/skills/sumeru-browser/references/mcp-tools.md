@@ -163,9 +163,15 @@ Streamable HTTP:
 ```json
 {
   "type": "http",
-  "url": "http://127.0.0.1:8080/mcp"
+  "url": "http://127.0.0.1:8080/mcp",
+  "headers": { "Authorization": "Bearer <SUMERU_API_KEY value>" }
 }
 ```
+
+Authentication is shared with `/gw` (`SUMERU_API_KEY`). When the runtime has a key
+configured, requests without it get HTTP `401` + `WWW-Authenticate: Bearer` before
+any JSON-RPC processing; that is a transport-level failure, not `isError`. Drop the
+`headers` entry only when the runtime is explicitly unauthenticated and loopback-only.
 
 The server forwards only arguments declared in the chosen tool's `inputSchema`;
 unknown keys are dropped. Extra top-level fields in `tools/call` are ignored.

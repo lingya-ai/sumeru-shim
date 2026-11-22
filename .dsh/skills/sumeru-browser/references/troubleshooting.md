@@ -22,7 +22,9 @@ If `ping` succeeds but a page call fails, the target or page state is the proble
 | `工具失败: [GATEWAY_TIMEOUT]` | 15 s shim timeout | avoid blocking JS; split long work |
 | `工具失败: [SUMERU_OPERATION_FAILED] agent host closed` | tab/agent closed during eval | re-list tabs; do not close with eval in flight |
 | `工具失败: [GW_UNKNOWN_METHOD]` | wrong tool/method | use the 12 tools only |
-| HTTP 401 / gateway auth failure | API key mismatch | set `SUMERU_API_KEY` and `X-Sumeru-Token` consistently |
+| HTTP 401 + `WWW-Authenticate: Bearer` (no JSON-RPC body) | runtime has `SUMERU_API_KEY`, request carried no credential | add `Authorization: Bearer <key>` (or `X-Sumeru-Token`) to the MCP client config |
+| HTTP 401 with `error="invalid_token"` | credential present but wrong | sync the client token with the runtime's `SUMERU_API_KEY` / `SUMERU_API_KEY_FILE` |
+| `/mcp` returns 200 but you expected 401 | key unset, or `SUMERU_MCP_AUTH=off` | check `/healthz.auth.mcp` (`open` vs `token`) |
 | `gateway closed` | shim gateway connection replaced | one client only; don't bypass shim |
 
 ## Common semantic mistakes

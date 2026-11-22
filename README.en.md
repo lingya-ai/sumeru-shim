@@ -55,7 +55,7 @@ Chromium (custom kernel, single source of truth)
   └─ snapshotAX → AX tree; captureScreenshot → surface capture
   │  X11 :99
   ▼
-Xvfb ← x11vnc ← websockify/noVNC                  :6901
+Xvnc :99 ← websockify/noVNC                        :6901
   ▲
 Human (opens noVNC, watches/clicks)
 ```
@@ -87,6 +87,16 @@ npm run smoke
 > [docs/kernel.md](docs/kernel.md) to download the source and build it locally.
 
 Open **http://127.0.0.1:6901/vnc.html** to see the native Chromium window.
+
+> Chinese input: the container starts the bundled fcitx5 by default (`SUMERU_IME=fcitx`).
+> Inside noVNC, turn **your local IME off** and type pinyin (e.g. `nihao`), then pick a
+> candidate with space/number — the Chinese text is composed by the remote IME. noVNC has
+> no channel to forward local IME compositions, so locally composed characters arrive as
+> `?`. Set `SUMERU_IME=off` to skip the IME.
+>
+> Copy/paste: send text from the noVNC clipboard panel and paste with `Ctrl+V` in the
+> remote browser. The server is TigerVNC Xvnc, which speaks the extended clipboard in
+> UTF-8, so Chinese text survives the round trip.
 
 ```bash
 node bin/sumeru.mjs health
@@ -228,10 +238,11 @@ npm run up
 
 Ports are bound to `127.0.0.1` by default (8080/6901). For remote humans:
 
-1. Put **noVNC** behind a VPN / reverse proxy with TLS and authentication; do not
-   expose 6901 directly.
-2. If **`/gw`** is reachable across machines, set `SUMERU_API_KEY` and send
-   `X-Sumeru-Token`.
+1. Put **noVNC** behind a VPN / reverse proxy with TLS, and enable VNC auth
+   (`SUMERU_VNC_AUTH=vnc` + an 8-byte `SUMERU_VNC_PASSWORD`); do not expose 6901
+   directly.
+2. If **`/gw` or `/mcp`** is reachable across machines, set `SUMERU_API_KEY` and
+   send `Authorization: Bearer <key>` (or `X-Sumeru-Token`).
 3. Mount `/data` on persistent storage so tabs, history and sessions survive
    restarts/upgrades.
 4. Recommended resources: `--cpus=2 --memory=3g --memory-swap=3g --shm-size=1g`.
@@ -270,23 +281,36 @@ Recommended: the shim's **Streamable HTTP** endpoint. The client does not need N
 POST http://127.0.0.1:8080/mcp
 protocol: 2025-06-18
 transport: stateless, JSON-only
+auth: shared with /gw via SUMERU_API_KEY (required once a key is set)
 ```
 
-MCP client config:
+MCP client config (drop `headers` when `SUMERU_API_KEY` is unset; most clients do
+not expand `${...}`, so put the real value in):
 
 ```json
 {
   "mcpServers": {
     "sumeru": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer <your SUMERU_API_KEY>" }
     }
   }
 }
 ```
 
-> The current `/mcp` endpoint is **unauthenticated** for first-version validation;
-> bind it to `127.0.0.1` or a private network only.
+```bash
+curl -s http://127.0.0.1:8080/mcp \
+  -H "Authorization: Bearer $SUMERU_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+> With `SUMERU_API_KEY` set, both `/gw` and `/mcp` require
+> `Authorization: Bearer <key>` or `X-Sumeru-Token: <key>`. Without a key both
+> surfaces are open and must stay on `127.0.0.1` or a private network. See
+> [docs/auth.md](docs/auth.md) for the 401 semantics, rotation and
+> `SUMERU_MCP_AUTH`.
 
 Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
 
@@ -316,8 +340,9 @@ Agent skill (MCP tool usage): [.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/
 That is the source of agent power and the largest attack surface:
 
 - bind to loopback by default; never expose `/gw` or `/mcp` directly to the public internet;
-- for remote access, set `SUMERU_API_KEY` and add network access control;
-- noVNC has no password by default; put it behind VPN/reverse proxy with auth + TLS;
+- for remote access, set `SUMERU_API_KEY` (shared by `/gw` and `/mcp`) and add network access control;
+- enable `SUMERU_VNC_AUTH=vnc` with an 8-byte password for noVNC, behind VPN/reverse proxy with TLS;
+- credentials live in memory only (the API key is kept as a sha256 digest): never written to disk, never logged; apply config changes by recreating/restarting the container;
 - one browser/profile per tenant; do not share a profile between untrusted users;
 - see [docs/security.md](docs/security.md).
 
@@ -332,6 +357,8 @@ That is the source of agent power and the largest attack surface:
 - **Persistent cookies commit ~30 s**; a hard kill can lose the last 30 s.
 - **No CDP**: Playwright/Puppeteer cannot attach; debug pages with `evaluateTarget`,
   `snapshotAX` and screenshots.
+- **Chinese input relies on the remote IME**: the container starts fcitx5 by default, but
+  noVNC cannot forward local IME compositions; turn the local IME off and type pinyin.
 - **No guarantee against every anti-bot check**; the project only guarantees no SDK
   injection, no CDP port and `navigator.webdriver=false`.
 
@@ -350,6 +377,7 @@ docs/                architecture, development, operations, kernel, troubleshoot
 vendor/novnc/        noVNC (MPL-2.0) for offline image builds
 .dsh/skills/        agent skills (MCP browser operation)
 build/               kernel output (gitignored; fetched by setup)
+logs/                local script/build logs (gitignored; all logs go here)
 ```
 
 ## Docs

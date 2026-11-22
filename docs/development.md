@@ -20,6 +20,7 @@ scripts/acceptance/linux/m-series/   验收 gate
 deploy/         compose.yaml + .env.example
 chromium/       内核版本/GN 参数/minimal overlay
 docs/           架构/开发/运维/内核/排障/安全
+logs/           本地日志（git 忽略，统一写这里）
 ```
 
 ## 1. 单测
@@ -86,7 +87,18 @@ MCP（Streamable HTTP，无状态 JSON，协议 `2025-06-18`）：
 POST http://127.0.0.1:8080/mcp
 ```
 
-当前 `/mcp` 暂不鉴权，只应绑定回环/内网。
+`/mcp` 与 `/gw` 共用 `SUMERU_API_KEY`：设了 key 就要带
+`Authorization: Bearer <key>`（或 `X-Sumeru-Token`），没设则两个面都开放、只应绑定
+回环/内网。细节见 [auth.md](auth.md)。
+
+```bash
+# 本地带凭据调用
+export SUMERU_API_KEY="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | cut -c1-32)"
+curl -s http://127.0.0.1:8080/mcp \
+  -H "Authorization: Bearer $SUMERU_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## 6. 调试 shim
 
@@ -114,7 +126,8 @@ npm run logs
 
 - 一个主题一个提交；提交前 `npm run ci`（单测 + 语法 + 秘密扫描 + compose config）。
 - 内核改动要同步 overlay，并在 `build-info.json` 更新 commit/SHA。
-- 文档与实现保持一致；不要提交 `build/`、`dist/`、本地 profile。
+- 文档与实现保持一致；日志文件统一写 `logs/`（git 忽略），不要提交 `build/`、
+  `dist/`、本地 profile 与日志。
 
 ## 9. 内核开发
 

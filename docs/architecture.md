@@ -25,15 +25,15 @@ Chromium 156（自建内核，唯一状态权威）
   └─ snapshotAX → AX tree；captureScreenshot → surface capture
   │  X11 :99
   ▼
-Xvfb ← x11vnc ← websockify/noVNC                     :6901
+Xvnc :99 ← websockify/noVNC                           :6901
 ```
 
 ## 四层职责
 
 | 层 | 组件 | 职责 | 不做什么 |
 |---|---|---|---|
-| 呈现 | Xvfb / x11vnc / websockify / noVNC + 原生 Chromium 窗口 | 人类观看与直接操作 | 零自定义 UI |
-| 门面 | `src/`、`bin/`、`deploy/compose.yaml` | 拉起 chrome、持 token、`/gw` 代理、`/mcp` HTTP MCP、健康/退出语义 | 无状态；不做 ledger/viewer/CDP |
+| 呈现 | TigerVNC Xvnc（X server + VNC 合一）/ websockify / noVNC + 原生 Chromium 窗口 | 人类观看与直接操作 | 零自定义 UI |
+| 门面 | `src/`、`bin/`、`deploy/compose.yaml` | 拉起 chrome、在内存里持凭据（digest）、`/gw` 代理、`/mcp` HTTP MCP、健康/退出语义 | 无状态；不做 ledger/viewer/CDP；不落盘凭据 |
 | 契约 | K-Gateway（`sumeru/browser/gateway/sumeru_gateway.cc`） | 浏览器唯一对外操作通道 | 不做空间/所有权/lease/事件流 |
 | 权威 | Chromium 自身 | TabStripModel、NavigationController、Profile、窗口树 | 无第二状态副本 |
 
@@ -75,8 +75,7 @@ POST /gw
 
 ```text
 tini (PID 1, bin/start-all.sh)
-├─ Xvfb :99
-├─ x11vnc :5900 ← websockify :6901
+├─ Xvnc :99（X server + VNC :5900） ← websockify :6901
 ├─ fcitx5（可选；SUMERU_IME=fcitx 时）
 └─ node src/index.mjs（前台）
    └─ chrome（原生窗口）
@@ -84,7 +83,8 @@ tini (PID 1, bin/start-all.sh)
 ```
 
 `GET /healthz` 八层：`x / synth / webui / gateway / kernel / window / vnc / ime`。
-`ready=true` 只表示 shim 启动步骤完成；各层独立报告。
+`ready=true` 只表示 shim 启动步骤完成；各层独立报告。顶层另有一个 `auth` 字段，
+报告 `/gw` 与 `/mcp` 当前是 `token` 还是 `open`（认证方案见 [auth.md](auth.md)）。
 
 ## 代码索引
 
@@ -96,8 +96,9 @@ tini (PID 1, bin/start-all.sh)
 | AX 快照 | `sumeru/browser/snapshot/snapshot_serializer.cc` |
 | 页面截图 | `content/browser/renderer_host/sumeru_page_capture.cc` |
 | shim 启动/代理/健康 | `src/index.mjs`、`src/runtime.mjs`、`src/startup.mjs` |
+| 认证（/gw + /mcp） | `src/auth.mjs`、`docs/auth.md` |
 | CLI / MCP | `bin/sumeru.mjs`、`POST /mcp`（Streamable HTTP） |
-| 容器启动/IME | `bin/start-all.sh`、`bin/start-novnc.sh` |
+| 容器启动/IME/VNC 认证 | `bin/start-all.sh`、`bin/vnc-auth.sh`、`bin/start-novnc.sh` |
 | 镜像 | `Dockerfile.runtime` |
 
 > 内核源码不在本仓库；overlay 与 artifact 见 [kernel.md](kernel.md)。

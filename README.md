@@ -53,7 +53,7 @@ Chromium（自建内核，唯一状态权威）
   └─ snapshotAX → AX tree；captureScreenshot → surface capture
   │  X11 :99
   ▼
-Xvfb ← x11vnc ← websockify/noVNC                    :6901
+Xvnc :99 ← websockify/noVNC                          :6901
   ▲
 人类（浏览器打开 noVNC，直接看/点）
 ```
@@ -84,6 +84,14 @@ npm run smoke
 > 仓库不包含 Chromium 源码或预编译内核；请按 [docs/kernel.md](docs/kernel.md) 下载源码并本地构建。
 
 打开 **http://127.0.0.1:6901/vnc.html**，能看到原生 Chromium 窗口。
+
+> 中文输入：容器默认启动镜像内置的 fcitx5（`SUMERU_IME=fcitx`）。在 noVNC 里请把
+> **本地输入法关掉**，直接打拼音（如 `nihao`），再用空格/数字上屏——中文由远端输入法合成。
+> noVNC 没有转发"本地输入法组合结果"的通道，本地组合出的中文会变成 `?`。
+> 不需要输入法时设 `SUMERU_IME=off`。
+>
+> 复制粘贴：noVNC 的剪贴板面板发送文本、远端 `Ctrl+V` 粘贴。服务端是 TigerVNC Xvnc，
+> 走扩展剪贴板 UTF-8，中文不会变成 `?`。
 
 ```bash
 node bin/sumeru.mjs health
@@ -222,8 +230,10 @@ npm run up
 
 默认只绑 `127.0.0.1`（8080/6901）。云上给人类访问时，建议：
 
-1. **noVNC** 放在 VPN / 反向代理 + TLS + 认证之后，不要直接暴露 6901；
-2. **`/gw`** 若跨机器访问，必须设置 `SUMERU_API_KEY`，客户端带 `X-Sumeru-Token`；
+1. **noVNC** 放在 VPN / 反向代理 + TLS 之后，并开启 VNC 认证
+   （`SUMERU_VNC_AUTH=vnc` + 8 字节 `SUMERU_VNC_PASSWORD`），不要直接暴露 6901；
+2. **`/gw` 与 `/mcp`** 若跨机器访问，必须设置 `SUMERU_API_KEY`，客户端带
+   `Authorization: Bearer` 或 `X-Sumeru-Token`；
 3. 数据卷挂到持久盘（`/data`），容器重启/升级不丢标签、历史、登录态；
 4. 资源建议 `--cpus=2 --memory=3g --memory-swap=3g --shm-size=1g`；
 5. 用 `restart: unless-stopped` + `/healthz` 做存活探测。
@@ -261,22 +271,34 @@ curl -s http://127.0.0.1:8080/gw \
 POST http://127.0.0.1:8080/mcp
 协议版本：2025-06-18
 传输：无状态 JSON-only
+鉴权：与 /gw 共用 SUMERU_API_KEY（设置后必须带凭据）
 ```
 
-MCP 客户端配置：
+MCP 客户端配置（未设 `SUMERU_API_KEY` 时去掉 `headers`；多数客户端不会展开
+`${...}`，需填真实值）：
 
 ```json
 {
   "mcpServers": {
     "sumeru": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer <SUMERU_API_KEY 的值>" }
     }
   }
 }
 ```
 
-> 当前版本的 `/mcp` **暂不鉴权**，只应绑定 `127.0.0.1` 或内网；不要直接暴露公网。
+```bash
+curl -s http://127.0.0.1:8080/mcp \
+  -H "Authorization: Bearer $SUMERU_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+> 设置 `SUMERU_API_KEY` 后，`/gw` 与 `/mcp` 都要求 `Authorization: Bearer <key>`
+> 或 `X-Sumeru-Token: <key>`；未设置则两个面都开放，只应绑定 `127.0.0.1` 或内网。
+> 认证细节（401 语义、轮换、`SUMERU_MCP_AUTH`）见 [docs/auth.md](docs/auth.md)。
 
 Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/skills/sumeru-browser/SKILL.md)
 
@@ -306,8 +328,9 @@ Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/s
 也是最大攻击面：
 
 - 默认只绑回环；不要把 `/gw` 或 `/mcp` 直接暴露公网；
-- 对外必须设置 `SUMERU_API_KEY`，并在网络层加访问控制；
-- noVNC 默认无密码，云上必须套 VPN/反代 + 认证 + TLS；
+- 对外必须设置 `SUMERU_API_KEY`（`/gw` 与 `/mcp` 共用），并在网络层加访问控制；
+- noVNC 开 `SUMERU_VNC_AUTH=vnc` + 8 字节口令，并套 VPN/反代 + TLS；
+- 凭据只在内存里（API key 只留 sha256 digest），不落盘、不进日志；改配置后重建/重启生效；
 - 单容器单用户；不要用同一个浏览器 profile 给互不信任的租户；
 - 详见 [docs/security.md](docs/security.md)。
 
@@ -318,6 +341,8 @@ Agent skill（MCP 工具用法）：[.dsh/skills/sumeru-browser/SKILL.md](.dsh/s
 - **gateway 单客户端**；外部客户端与 shim 同时连接会互顶（`SUMERU_GW_SHORT_CONN=1` 可绕）。
 - **持久 cookie 约 30 s 提交窗口**；硬杀可能丢最后 30 s。
 - **没有 CDP**：不能用 Playwright/Puppeteer 直连；页面调试用 `evaluateTarget` / `snapshotAX` / 截图。
+- **中文输入依赖远端输入法**：容器默认启动 fcitx5，但 noVNC 不转发本地输入法的组合结果；
+  在 noVNC 里关掉本地输入法、直接打拼音才会经由远端 fcitx 上屏。
 - **不保证绕过所有反自动化检测**；本项目只保证无 SDK 注入、无 CDP 端口、`navigator.webdriver=false`。
 
 ## 仓库结构
@@ -335,6 +360,7 @@ docs/                架构、开发、运维、内核、排障、安全、版�
 vendor/novnc/        离线构建用 noVNC（MPL-2.0）
 .dsh/skills/        Agent skills（MCP 浏览器操作）
 build/               内核产物（gitignored；由 setup 获取）
+logs/                本地脚本/构建日志（gitignored；日志统一写这里）
 ```
 
 ## 文档

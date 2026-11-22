@@ -28,6 +28,7 @@ chromium/         VERSION, GN args, minimal overlay, kernel Dockerfile
 docs/             architecture, development, kernel, operations, security
 chromium-src/     local, gitignored Chromium source cache
 build/            local kernel artifact, gitignored
+logs/             local script/build logs, gitignored
 ```
 
 ## Commands
@@ -43,6 +44,27 @@ npm run acceptance       # m-series acceptance
 
 Use `npm run ci` before committing. Do not weaken or skip tests to make a change
 pass. Add or update a focused test for behavior changes.
+
+## Logs
+
+Every log file produced by a local script, build or ad-hoc command goes to the
+gitignored `logs/` directory at the repo root. Do not write logs to the repo
+root, `build/`, `dist/`, or any other tracked directory:
+
+```bash
+mkdir -p logs
+docker build -f Dockerfile.runtime -t sumeru-runtime:local . > logs/runtime-build.log 2>&1
+docker pull moailaozi/sumeru-shim:2.2.0 2>&1 | tee logs/docker-pull.log
+node scripts/clean.mjs --logs    # remove logs/ (and any stray root *.log)
+```
+
+- Name the file after the operation (`logs/kernel-build.log`, `logs/smoke.log`,
+  `logs/docker-pull.log`); overwrite or truncate it instead of accumulating
+  numbered copies such as `kernel-build2.log`, `kernel-build3.log`.
+- `/logs/` and `*.log` are gitignored; never commit log files or reference them
+  from docs as if they were repo artifacts.
+- Container/runtime logs are not files: read them with `npm run logs` or
+  `docker logs -f sumeru` (see `docs/operations.md` §4).
 
 ## Kernel source and build
 
@@ -82,9 +104,12 @@ Chromium commit and chrome SHA256. Kernel artifacts must include
 - `/mcp` is stateless JSON-only Streamable HTTP, protocol `2025-06-18`.
   - `POST` only; notifications return `202` with an empty body.
   - `capture_page` returns an MCP image content block, not base64 text.
-  - The endpoint is currently unauthenticated for first-version validation;
-    bind the shim to loopback/private networks and do not add a public exposure
-    path without authentication.
+  - Credentials are shared with `/gw` (`SUMERU_API_KEY`, comma-free single value);
+    with a key set, `/mcp` requires it by default (`SUMERU_MCP_AUTH=auto`).
+    Failures are HTTP `401` + `WWW-Authenticate: Bearer` (transport level, not a
+    JSON-RPC error). Without a key both surfaces are open — bind the shim to
+    loopback/private networks and never expose an unauthenticated path publicly.
+    See `docs/auth.md`; credentials live in memory only (never on disk).
 - `/healthz` keeps the eight-layer contract; `ready` is not a probe aggregate.
 - Preserve the 12 gateway methods and the `isTrusted=true` input path.
 - `evaluateTarget` targets the main frame/main world, does not await promises,
@@ -101,7 +126,7 @@ Chromium commit and chrome SHA256. Kernel artifacts must include
 - Comments and docs may be Chinese or English; keep `README.md` and
   `README.en.md` consistent when user-facing behavior changes.
 - Do not reformat unrelated files or rewrite generated/vendor files.
-- Do not commit `chromium-src/`, `build/`, `dist/`, local profiles, logs, or
+- Do not commit `chromium-src/`, `build/`, `dist/`, `logs/`, local profiles, or
   `chromium/scripts/publish-kernel.sh`.
 
 ## Security
@@ -111,8 +136,9 @@ Chromium commit and chrome SHA256. Kernel artifacts must include
 - Do not print secrets in logs or test output.
 - Keep the shim/gateway on loopback or a private network; no default public MCP
   or gateway exposure.
-- Treat the unauthenticated `/mcp` endpoint as a local/private deployment
-  constraint, not as an authorization model.
+- `/mcp` and `/gw` share one credential (`SUMERU_API_KEY`); set it whenever the
+  shim leaves loopback. An unconfigured key means both surfaces are open — that
+  is a deployment constraint, not an authorization model (`docs/auth.md`).
 
 ## Licensing
 

@@ -24,12 +24,17 @@ The recommended MCP endpoint is the shim's **Streamable HTTP** endpoint:
 ```json
 {
   "type": "http",
-  "url": "http://127.0.0.1:8080/mcp"
+  "url": "http://127.0.0.1:8080/mcp",
+  "headers": { "Authorization": "Bearer <SUMERU_API_KEY value>" }
 }
 ```
 
 Protocol `2025-06-18`, stateless JSON-only. No Node client is required.
-This version's `/mcp` is unauthenticated; use it only on loopback/private networks.
+`/mcp` shares `SUMERU_API_KEY` with `/gw`: with a key configured every request
+must carry `Authorization: Bearer <key>` (or `X-Sumeru-Token: <key>`); without a
+key the endpoint is open and must stay on loopback/private networks. A `401`
+with `WWW-Authenticate: Bearer` means "credentials missing or invalid", never a
+tool error.
 
 - Start with `ping`; if it fails, check `/healthz` and the container, not a CDP port.
 
