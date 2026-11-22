@@ -16,9 +16,25 @@ services:
       - sumeru-data:/data
     environment:
       SUMERU_SCREEN: ${SUMERU_SCREEN:-1280x800x24}
-      SUMERU_IME: ${SUMERU_IME:-}
+      # 中文输入：默认启用镜像内置的 fcitx5（noVNC 里的中文靠远端输入法上屏）。
+      # 不需要时设 SUMERU_IME=off；镜像缺 fcitx5 时会 fail-fast。
+      SUMERU_IME: ${SUMERU_IME:-fcitx}
       SUMERU_KEEP_LAST_TAB: ${SUMERU_KEEP_LAST_TAB:-1}
+      # HTTP 认证（/gw + /mcp）：留空 = 只应绑回环；设置后两边都要凭据。
+      # SUMERU_MCP_AUTH=auto（默认）在有 key 时强制 MCP；required 强制且无 key 拒绝启动；
+      # off 只放开 /mcp（不推荐，仅用于迁移）。
       SUMERU_API_KEY: ${SUMERU_API_KEY:-}
+      SUMERU_MCP_AUTH: ${SUMERU_MCP_AUTH:-auto}
+      # VNC 认证：none（默认，配合 -localhost 只允许容器内访问）| vnc（TigerVNC RFB 口令）。
+      # 口令只来自配置；vnc 模式下缺失会 fail-fast。
+      SUMERU_VNC_AUTH: ${SUMERU_VNC_AUTH:-none}
+      SUMERU_VNC_PASSWORD: ${SUMERU_VNC_PASSWORD:-}
+      SUMERU_VNC_LOCALHOST: ${SUMERU_VNC_LOCALHOST:-1}
+    # 更推荐用 Docker secrets 提供凭据（env 会出现在 docker inspect 输出里）：
+    #   1) 顶层加 secrets: { api_key: { file: ./secrets/api_key }, vnc_password: { file: ./secrets/vnc } }
+    #   2) 服务加 secrets: [api_key, vnc_password]
+    #   3) 环境改用 SUMERU_API_KEY_FILE=/run/secrets/api_key
+    #                  SUMERU_VNC_PASSWORD_FILE=/run/secrets/vnc_password
     shm_size: "1gb"
     mem_limit: 3g
     cpus: 2

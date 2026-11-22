@@ -42,14 +42,16 @@ RUN if [ -n "$DEBIAN_MIRROR" ]; then \
       sed -i "s|security.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
     fi
 
-# 运行时系统库（Chrome 依赖）+ 中文字体 + noVNC 远程控制组件
+# 运行时系统库（Chrome 依赖）+ 中文字体 + noVNC 远程控制组件。
+# 显示与 VNC 用 TigerVNC 的 Xvnc（X server + VNC server 合一）：扩展剪贴板（UTF-8）
+# 只实现在 Xvnc 里，noVNC 才能原样传中文；x11vnc/x0vncserver 都不支持。
 # fcitx5 家族（IME 启动修复）：人类中文输入走镜像内 fcitx（noVNC 路径）。
 #   - GTK immodule 必须有：缺了 GTK_IM_MODULE=fcitx 就是空设（IME 缺失时的启动缺陷）
 #   - dbus-x11 提供 dbus-launch（fcitx5 单一实例桥）
 #   - SUMERU_IME 未设时不启动 fcitx；设了 fcitx 而二进制缺失则在 start-all.sh fail-fast
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates tini curl \
-      xvfb x11vnc python3-websockify git \
+      tigervnc-standalone-server tigervnc-common tigervnc-tools python3-websockify git \
       fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-qt5 dbus-x11 \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
       libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \

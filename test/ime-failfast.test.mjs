@@ -2,7 +2,7 @@
 //   SUMERU_IME=fcitx 而镜像里没有 fcitx5 二进制 → 启动即报错退出。
 //
 // 验证对象是 `bin/start-all.sh` 里真正会被执行的那段逻辑：测试直接从脚本里
-// 抽出 `require_ime_binary()` 定义，用 bash 跑它（不启动 Xvfb/chrome）。
+// 抽出 `require_ime_binary()` 定义，用 bash 跑它（不启动 Xvnc/chrome）。
 // 没有 bash 的机器（纯 Windows）静默跳过行为用例，但仍保留静态断言。
 
 import assert from "node:assert/strict";
@@ -53,10 +53,10 @@ test("start-all.sh：IME fail-fast 存在且在拉起 chrome 之前执行（静�
   const callAt = source.indexOf("\nrequire_ime_binary\n");
   assert.ok(definitionAt >= 0, "缺 require_ime_binary() 定义");
   assert.ok(callAt > definitionAt, "定义了但没有调用");
-  // 必须在 Xvfb/chrome 之前 fail-fast（早失败才有意义）
-  const xvfbAt = source.indexOf("\nXvfb :99 -screen");
-  assert.ok(xvfbAt >= 0, "找不到 Xvfb 启动行");
-  assert.ok(xvfbAt > callAt, "fail-fast 必须在启动 Xvfb/chrome 之前");
+  // 必须在显示服务/浏览器之前 fail-fast（早失败才有意义）
+  const displayAt = source.indexOf("\nXvnc \"${xvnc_args[@]}\"");
+  assert.ok(displayAt >= 0, "找不到 Xvnc 启动行");
+  assert.ok(displayAt > callAt, "fail-fast 必须在启动 Xvnc/chrome 之前");
   assert.match(source, /command -v fcitx5/);
   assert.match(source, /SUMERU_IME:-0/);
   assert.match(source, /exit 1/);
