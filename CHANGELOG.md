@@ -3,6 +3,19 @@
 All notable changes to Sumeru runtime are documented here. The format follows
 Keep a Changelog; versions follow Semantic Versioning.
 
+## [2.3.0] - 2026-11-23
+
+### Added
+
+- Proprietary media codecs in the kernel: `proprietary_codecs = true` and
+  `ffmpeg_branding = "Chrome"` in `chromium/args.gn.linux` — H.264/AAC/MP3
+  decode is now built in, so mainstream mp4 / HLS playback works (previously
+  only the open codecs VP8/VP9/AV1/Opus were available).
+- Kernel rebuilt at Chromium 156.0.8078.74 (revision d331de35ca8ab, GN args
+  updated): `build/chrome` sha256 `51efbc66…2d74a`; artifact
+  `dist/sumeru-kernel-156.0.8078.74-d331de35ca8ab-linux-x64.tar.gz` sha256
+  `8c501ea7…f66`; `build-info.json` records the new args and hashes.
+
 ## [2.2.0] - 2026-11-22
 
 ### Added
