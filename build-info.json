@@ -9,7 +9,7 @@
     "file": "chromium/overlay/current.patch",
     "sha256": "5c941d3c407b3378fada729f9abb4d751a58172761944895af5df83cab05df29"
   },
-  "builtAt": "2026-11-22T18:20:00+08:00",
+  "builtAt": "2026-11-23T05:31:00+08:00",
   "argsGn": {
     "is_debug": false,
     "is_official_build": true,
@@ -19,9 +19,11 @@
     "use_thin_lto": false,
     "is_cfi": false,
     "use_dbus": true,
-    "generate_about_credits": true
+    "generate_about_credits": true,
+    "proprietary_codecs": true,
+    "ffmpeg_branding": "Chrome"
   },
-  "chromeSha256": "9623577d59dcd76c6157c142304ee36b522103169b7b35d0a1d7c1d92d634d3d",
+  "chromeSha256": "51efbc660309fbe79f43d06ca934b4a63e018d8a67463a33dc8e8c9f84b2d74a",
   "requiredFiles": [
     "chrome",
     "chrome_100_percent.pak",
@@ -41,7 +43,7 @@
   "artifact": {
     "name": "sumeru-kernel-156.0.8078.74-d331de35ca8ab-linux-x64.tar.gz",
     "url": "",
-    "sha256": "5348a900cf93b19929f0bc68eb5016c30b457a1a6d69cabc93f0353764fd6fc8"
+    "sha256": "8c501ea7726d9e5803b1237df97a21cb693b20ca087a88af88e6aa60eef23f66"
   },
   "kernelImage": "registry.ops.lingya.tech/sumeru/sumeru-kernel",
   "kernelTag": "156.0.8078.74-d331de35ca8ab"

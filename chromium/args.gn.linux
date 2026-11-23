@@ -23,6 +23,12 @@ chrome_pgo_phase = 0
 # 品牌化资源（sumeru overlay 会改写这些常量）
 is_chrome_branded = false
 
+# 专有编解码：启用 H.264/AAC/MP3（主流 mp4 / HLS 播放必需）。
+# 注意：ffmpeg_branding="Chrome" 只是编解码品牌，不影响 chrome 品牌化资源
+# （is_chrome_branded 仍为 false）。
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+
 # 生成完整的 Chromium 第三方许可证文件（LICENSES.chromium.html），
 # 二进制分发合规所需；构建后应出现在 out/release-linux/。
 generate_about_credits = true
